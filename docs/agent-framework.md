@@ -1,284 +1,290 @@
 # Agent Framework
 
-This framework is intentionally isolated from the current watcher business code.
-It is designed as a reusable autonomous agent runtime that can be integrated later.
+## Scope
 
-## Included pieces
+Watcher contains a substantial standalone agent runtime under `app/src/main/java/com/example/watcher/agentframework`.
 
-- `AgentKernel`: shared entry point that owns tools, memory, and sessions.
-- `AgentSessionController`: a self-running session with lifecycle, event stream, and stop conditions.
-- `AutonomousAgentRuntime`: a higher-level closed-loop runtime that wires perception, memory, cognition, execution, feedback, learning, and communication together.
-- `AgentBrain`: pluggable decision engine.
-- `JsonProtocolAgentBrain`: LLM-ready adapter that expects strict JSON actions.
-- `AgentToolRegistry`: shared tool registration and execution.
-- `InMemoryAgentMemoryStore`: default session memory implementation.
-- `AgentFrameworkService`: external-facing facade for agent registration, invocation, run tracking, and cross-run evolution.
-- `AgentProfileStore`: persistent profile abstraction for agent identity, config, and evolution state.
-- `AgentProfileEvolutionStrategy`: pluggable strategy that turns completed runs into long-term profile and knowledge updates.
+It is not just a future-facing design stub. The framework is already integrated into the app through:
 
-## What makes it a real agent runtime
+- `WatcherApplication`
+- `AgentFrameworkContainer`
+- app-specific brain factory registration
+- LiteRT-backed brain registration
+- gateway endpoints for agent listing and runtime control
 
-- A session can run for multiple steps without business code orchestrating every turn.
-- The agent can choose between continue, tool calls, waiting, or finishing.
-- Tool execution is captured into history and fed back into the next decision round.
-- Working and episodic memory writes are persisted across steps inside the session.
-- Runtime budget, idle budget, and consecutive failure limits are enforced by the framework.
-- State changes are exposed through `StateFlow` and `SharedFlow`.
-- The framework can now register agents as durable runtime identities and invoke them as independent agents from external callers.
-- Agent profiles and knowledge can evolve across multiple runs instead of being discarded after one request.
+This document describes the framework as it exists now.
 
-## Layer mapping
+## Design Goals
 
-The codebase now separates the framework into two levels:
+The framework is built to support durable, autonomous, tool-using agents inside an Android app environment.
 
-- Low-level runtime primitives:
-  - `core/`
-  - `memory/`
-  - `tools/`
-  - `runtime/`
-- Closed-loop autonomous runtime:
-  - `autonomy/`
-- Multi-agent collaboration runtime:
-  - `multiagent/`
-- External invocation and lifecycle facade:
-  - `service/`
+Current goals include:
 
-The `autonomy/` package maps directly to the expected agent layers:
+- long-lived agent identities
+- autonomous multi-step execution
+- persistent memory and knowledge
+- pluggable brain backends
+- service-level invocation APIs
+- structured runtime state and event capture
+- optional multi-agent coordination
 
-- Base support layer:
-  - `AutonomousAgentRuntime`
-  - lifecycle state and runtime budget handling
-- Perception and input layer:
-  - `SignalAdapter`
-  - `PerceptionPipeline`
-  - `CommunicationHub`
-- Memory and knowledge layer:
-  - `StructuredMemoryManager`
-  - `StructuredMemorySnapshot`
-- Cognition and decision layer:
-  - `GoalParser`
-  - `TaskPlanner`
-  - `ReasoningEngine`
-  - `DecisionSelector`
-  - `RuleConstraintEngine`
-- Tool and execution layer:
-  - `ExecutionCoordinator`
-  - `AgentToolRegistry`
-- Feedback and validation layer:
-  - `ResultValidator`
-  - `FeedbackProcessor`
-- Learning and iteration layer:
-  - `LearningEngine`
-  - `EvaluationEngine`
-- Communication and collaboration layer:
-  - `CommunicationHub`
+## Package Layout
 
-The `multiagent/` package adds the missing team-level collaboration pieces:
+The framework is split into the following packages:
 
-- Team foundation:
-  - `TeamDefinition`
-  - `TeamAgentSpec`
-  - `TeamTask`
-  - `TeamSnapshot`
-- Shared collaboration infrastructure:
-  - `SharedBlackboard`
-  - `TeamMessageBus`
-  - `TeamAgentRegistry`
-- Team cognition and coordination:
-  - `TeamTaskPlanner`
-  - `TeamTaskAssignmentStrategy`
-  - `ConsensusStrategy`
-  - `MultiAgentCoordinator`
-- Agent runtime adapter:
-  - `CollaborativeAgentFactory`
-  - `AutonomousCollaborativeAgentFactory`
+- `core/`
+  Agent definitions, events, and shared models
+- `runtime/`
+  Session-level execution primitives and agent brains
+- `autonomy/`
+  Closed-loop autonomous runtime and lifecycle machinery
+- `tools/`
+  Tool interfaces and default context tools
+- `memory/`
+  Session memory storage abstractions
+- `knowledge/`
+  Long-term knowledge storage abstractions
+- `multiagent/`
+  Team coordination and collaboration models
+- `service/`
+  External-facing facade for registration, invocation, persistence, and runtime tracking
+- `integration/`
+  App-specific integration helpers and default brain factory wiring
 
-## Multi-agent collaboration
+## Main Concepts
 
-The team runtime is designed around a strict separation of concerns:
+### Agent definition
 
-- Single-agent autonomy remains inside `autonomy/`.
-- Team coordination remains inside `multiagent/`.
-- Collaboration state is externalized into the blackboard and message bus.
-- Consensus is computed at the team layer, not hidden inside one agent.
+An agent has a durable identity and behavioral configuration:
 
-This lets you build:
+- `agentId`
+- `name`
+- `systemInstruction`
+- `goal`
+- run configuration and metadata
 
-- planner / executor / reviewer teams
-- specialist ensembles
-- leader / follower hierarchies
-- blackboard-driven cooperative systems
-- consensus-based decision teams
+### Brain
 
-### Core collaboration flow
+A brain is the decision engine behind an agent.
 
-1. Define a `TeamDefinition` with members and roles.
-2. Create a `MultiAgentCoordinator`.
-3. The coordinator initializes initial tasks through `TeamTaskPlanner`.
-4. Tasks are assigned through `TeamTaskAssignmentStrategy`.
-5. Each agent runs independently through a `CollaborativeAgentHandle`.
-6. Outputs are published into the shared blackboard and broadcast as team messages.
-7. Follow-up tasks can be added dynamically.
-8. Final proposals are merged by `ConsensusStrategy`.
+Examples in the current codebase:
 
-### Team runtime usage
+- app-default remote LLM brain factory
+- LiteRT-backed local brain factory
+- JSON-protocol brains for structured autonomous decisions
 
-```kotlin
-val coordinator = MultiAgentCoordinator(
-    team = TeamDefinition(
-        teamId = "incident_team",
-        name = "Incident Team",
-        rootGoal = "Diagnose and resolve the incident",
-        members = members
-    ),
-    agentFactory = AutonomousCollaborativeAgentFactory(
-        modulesFactory = { spec, context ->
-            defaultAutonomousModules(
-                brain = JsonProtocolAgentBrain(myGateway),
-                toolRegistry = AgentToolRegistry()
-            )
-        }
-    ),
-    parentScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-)
+### Tools
 
-coordinator.start()
-val finalTeamState = coordinator.awaitCompletion()
-```
+Tools are registered through `AgentToolRegistry` and may be used during autonomous execution.
 
-## Basic usage
+The framework includes default context tools so agents can interact with memory and knowledge stores without custom business glue for every run.
 
-```kotlin
-val kernel = AgentKernel()
-kernel.registerTool(MyTool())
+### Memory
 
-val session = kernel.createSession(
-    definition = AgentDefinition(
-        agentId = "ops_agent",
-        name = "Ops Agent",
-        systemInstruction = "Solve the task using tools when needed.",
-        goal = "Inspect a target and return a final answer."
-    ),
-    brain = JsonProtocolAgentBrain(myGateway)
-)
+The framework distinguishes between runtime/session memory and longer-lived structured memory:
 
-session.start()
-val finalSnapshot = session.awaitCompletion()
-```
+- `AgentMemoryStore`
+- structured memory store and manager abstractions in `autonomy/`
 
-For the full closed-loop runtime:
+### Knowledge
 
-```kotlin
-val modules = defaultAutonomousModules(
-    brain = JsonProtocolAgentBrain(myGateway),
-    toolRegistry = AgentToolRegistry()
-)
+Long-term knowledge is stored separately through `AgentKnowledgeStore`.
 
-val runtime = AutonomousAgentRuntime(
-    definition = AgentDefinition(
-        agentId = "ops_agent",
-        name = "Ops Agent",
-        systemInstruction = "Observe, decide, act, validate, and iterate.",
-        goal = "Drive the task to completion."
-    ),
-    config = AutonomousAgentConfig(),
-    modules = modules,
-    parentScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-)
+This allows an agent profile to evolve across runs instead of discarding context after each invocation.
 
-runtime.start()
-runtime.submitSignal(AgentSignal(channel = SignalChannel.User, content = "Start the task"))
-val finalState = runtime.awaitCompletion()
-```
+### Service facade
 
-## Independent agent invocation
+`AgentFrameworkService` is the app-facing API surface for:
 
-For business code or external adapters that want to treat the framework as a standalone agent service, use `AgentFrameworkService`:
+- registering agents
+- registering brain factories
+- invoking agents
+- starting autonomous runtimes
+- submitting signals
+- reading and writing memory
+- reading and writing knowledge
+- querying runtime records
+- lifecycle reconciliation for persistent executions
 
-```kotlin
-val service = AgentFrameworkService()
+## Runtime Layers
 
-service.registerAgent(
-    AgentRegistration(
-        definition = AgentDefinition(
-            agentId = "ops_agent",
-            name = "Ops Agent",
-            systemInstruction = "Solve tasks autonomously and learn from runs.",
-            goal = "Handle operational requests."
-        ),
-        brain = JsonProtocolAgentBrain(myGateway)
-    )
-)
+### Low-level runtime
 
-val result = service.invoke(
-    AgentInvocationRequest(
-        agentId = "ops_agent",
-        inputs = listOf(
-            AgentInvocationInput(
-                role = AgentMessageRole.User,
-                content = "Inspect the latest incident and summarize the root cause."
-            )
-        )
-    )
-)
-```
+The low-level runtime provides the basic session machinery:
 
-This service layer provides:
+- `AgentKernel`
+- `ManagedAgent`
+- `AgentSessionController`
+- `AgentBrain`
+- `JsonProtocolAgentBrain`
 
-- explicit agent registration and profile lookup
-- synchronous or asynchronous invocation
-- invocation status and final snapshot query
-- cross-run profile evolution and knowledge accumulation
-- a stable boundary for future HTTP / gateway adapters
+This layer handles:
 
-## Memory and knowledge interfaces
+- turn execution
+- tool call handling
+- session lifecycle
+- stop conditions
+- session history
 
-The framework now exposes memory and knowledge through two coordinated paths:
+### Autonomous runtime
 
-- external service APIs on `AgentFrameworkService`
-- built-in runtime tools automatically registered into `AgentToolRegistry`
+The `autonomy/` package builds a closed-loop runtime on top of the session-level pieces.
 
-External callers can:
+Key pieces include:
 
-- preload invocation memory through `AgentInvocationRequest.preloadMemory`
-- preload agent knowledge through `AgentInvocationRequest.preloadKnowledge`
-- read and append invocation memory through `readInvocationMemory(...)` and `writeInvocationMemory(...)`
-- read, query, and append long-term knowledge through `readAgentKnowledge(...)`, `queryAgentKnowledge(...)`, and `writeAgentKnowledge(...)`
+- `AutonomousAgentRuntime`
+- lifecycle state tracking
+- signal ingestion
+- communication hub integration
+- structured memory management
+- bounded runtime policies
 
-Agents can use the same stores at runtime through default tools:
+This layer is responsible for allowing an agent to continue operating across multiple cycles without business code driving every turn.
 
-- `read_memory`
-- `write_memory`
-- `read_knowledge`
-- `query_knowledge`
-- `write_knowledge`
+### Multi-agent support
 
-This means the caller can inject context before a run, the agent can decide what to load while executing, and the agent can persist what it wants to keep after the run.
+The `multiagent/` package introduces team-level collaboration primitives.
 
-## JSON protocol
+Key pieces include:
 
-The default LLM adapter expects this shape:
+- `TeamModels`
+- `SharedCollaboration`
+- `TeamStrategies`
+- `MultiAgentCoordinator`
 
-```json
-{
-  "thinking": "short internal reasoning",
-  "reply": "optional reply",
-  "memory": [
-    { "scope": "working", "content": "important detail" }
-  ],
-  "action": {
-    "type": "continue",
-    "reason": "why",
-    "success": true,
-    "resumeAfterMillis": 0,
-    "calls": []
-  }
-}
-```
+This layer is designed to keep team orchestration outside a single agent brain so that:
 
-Supported `action.type` values:
+- shared state can be explicit
+- roles can remain distinct
+- coordination logic stays inspectable
+
+### Service and persistence
+
+The `service/` package is the stable boundary for external callers.
+
+Key responsibilities:
+
+- profile persistence
+- invocation records
+- runtime records
+- evolution strategies
+- tool registry ownership
+- persistent-runtime reconciliation
+
+`AgentFrameworkService.createPersistent(...)` and the builder path are the main entry points for setting up durable storage-backed runtime services.
+
+## How Watcher Integrates It
+
+Watcher wires the framework in `WatcherApplication` through `AgentFrameworkContainer`.
+
+Current integration steps:
+
+1. Create or load the Room-backed and file-backed dependencies needed by the app.
+2. Build `LlmWalletRepository`.
+3. Create the default remote brain factory.
+4. Create the LiteRT-backed brain factory.
+5. Register both into a `StaticAgentBrainCatalog`.
+6. Build an `AgentFrameworkService` with persistent storage under the app files directory.
+7. Expose this service to UI and gateway entry points.
+
+Practical consequences:
+
+- the app can manage agent profiles and brains
+- the app can expose agent runtime control through the gateway
+- remote and local model backends can both participate in the same service layer
+
+## Gateway Integration
+
+`GatewayServer` exposes a subset of the framework over LAN APIs:
+
+- list agents
+- get an agent profile
+- list runtimes for an agent
+- start a runtime
+- inspect runtime state
+- inspect runtime events
+- submit runtime signals
+- stop runtimes
+
+This makes the framework usable by external local tools without coupling them to the Android UI.
+
+## Memory and Knowledge Access
+
+The framework supports two coordinated access paths:
+
+- service APIs for the host application or external adapters
+- runtime tools available to the agent itself
+
+Through `AgentFrameworkService`, callers can:
+
+- preload memory before invocation
+- preload knowledge before invocation
+- read invocation memory
+- write invocation memory
+- clear invocation memory
+- read, query, write, and delete long-term knowledge
+- inspect structured memory
+
+This enables a full loop where:
+
+1. the caller injects context
+2. the agent decides what to use
+3. the agent persists useful output
+4. later runs can evolve from that persisted state
+
+## Brain Factories and Connection Testing
+
+App-level brain wiring is intentionally abstracted behind factories and testers.
+
+Important app integration types include:
+
+- `AppDefaultAgentBrainFactory`
+- `LiteRtAgentBrainFactory`
+- `AppAgentBrainConnectionTester`
+- `CompositeAgentBrainConnectionTester`
+
+This allows the app to validate whether a configured brain backend is usable before relying on it at runtime.
+
+## JSON Protocol
+
+The structured JSON protocol used by `JsonProtocolAgentBrain` is designed so an LLM can express:
+
+- a short reasoning summary
+- a user-facing reply
+- optional memory writes
+- a next action
+
+Representative action types include:
 
 - `continue`
 - `tool_calls`
 - `wait`
 - `finish`
+
+The important constraint is that the brain output must remain machine-interpretable so the runtime can enforce execution rules.
+
+## Boundaries and Non-Goals
+
+The framework currently does not try to be:
+
+- a public SDK with stable semver guarantees
+- a cloud-native orchestration platform
+- a replacement for the app's domain-specific repositories
+
+It is a reusable runtime subsystem inside Watcher, with clear enough boundaries that it could later be extracted or adapted if needed.
+
+## Recommended Reading Order
+
+1. `agentframework/service/AgentFrameworkService.kt`
+2. `agentframework/runtime/AgentSessionController.kt`
+3. `agentframework/runtime/JsonProtocolAgentBrain.kt`
+4. `agentframework/autonomy/AutonomousAgentRuntime.kt`
+5. `agentframework/multiagent/MultiAgentCoordinator.kt`
+6. `agentframework/integration/AppDefaultAgentBrainFactory.kt`
+7. `data/local/litert/LiteRtAgentBrainFactory.kt`
+8. `WatcherApplication.kt`
+
+## Related Docs
+
+- [../README.md](../README.md)
+- [architecture-overview.md](architecture-overview.md)
