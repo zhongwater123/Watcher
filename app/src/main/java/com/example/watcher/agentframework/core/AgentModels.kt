@@ -95,6 +95,7 @@ enum class AgentSessionStatus {
     Completed,
     Stopped,
     Failed,
+    Interrupted,
     Cancelled
 }
 
@@ -105,6 +106,7 @@ enum class AgentStopReason {
     IdleLimitReached,
     ConsecutiveFailures,
     StoppedByAgent,
+    InterruptedByRestart,
     Cancelled,
     Error
 }
@@ -131,5 +133,6 @@ data class AgentSessionSnapshot(
 val AgentSessionSnapshot.isTerminal: Boolean
     get() = status == AgentSessionStatus.Completed ||
         status == AgentSessionStatus.Stopped ||
+        status == AgentSessionStatus.Interrupted ||
         status == AgentSessionStatus.Failed ||
         status == AgentSessionStatus.Cancelled

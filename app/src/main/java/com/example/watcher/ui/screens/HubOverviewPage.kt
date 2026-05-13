@@ -59,6 +59,10 @@ internal fun HubOverviewPage(
     onOpenSettings: () -> Unit,
     onOpenAgentConfig: () -> Unit,
     onOpenWalletConfig: () -> Unit,
+    isConciseMode: Boolean,
+    onConciseModeChange: (Boolean) -> Unit,
+    rotaryRotationDegrees: Float,
+    onRotaryRotationChange: (Float) -> Unit,
     onNavigateMonitor: () -> Unit,
     onNavigateAnalysis: () -> Unit,
     onNavigateDigitalLifeCard: () -> Unit,
@@ -76,23 +80,30 @@ internal fun HubOverviewPage(
                 subtitle = header.subtitle,
                 currentPage = currentPage,
                 pageOffset = pageOffset,
+                showConciseModeToggle = true,
+                isConciseMode = isConciseMode,
+                onConciseModeChange = onConciseModeChange,
+                rotaryRotationDegrees = rotaryRotationDegrees,
+                onRotaryRotationChange = onRotaryRotationChange,
                 onOpenSettings = onOpenSettings,
                 onOpenAgentConfig = onOpenAgentConfig,
                 onOpenWalletConfig = onOpenWalletConfig
             )
         }
 
-        MotionStageSection(pageOffset = pageOffset, depth = MotionDepth.Support) {
-            ConnectionConfigCard(
-                label = "摄像头实时流",
-                value = settings.streamDisplayUrl,
-                detail = if (isStreamPlaying) {
-                    "应用启动后会自动连接，修改地址后会自动重连。"
-                } else {
-                    "当前连接已暂停，可点击编辑地址或恢复连接。"
-                },
-                onClick = onOpenSettings
-            )
+        if (!isConciseMode) {
+            MotionStageSection(pageOffset = pageOffset, depth = MotionDepth.Support) {
+                ConnectionConfigCard(
+                    label = "摄像头实时流",
+                    value = settings.streamDisplayUrl,
+                    detail = if (isStreamPlaying) {
+                        "应用启动后会自动连接，修改地址后会自动重连。"
+                    } else {
+                        "当前连接已暂停，可点击编辑地址或恢复连接。"
+                    },
+                    onClick = onOpenSettings
+                )
+            }
         }
 
         MotionStageSection(pageOffset = pageOffset, depth = MotionDepth.Hero) {
@@ -105,7 +116,8 @@ internal fun HubOverviewPage(
                 onReconnect = onReconnectStream,
                 onCaptureSnapshot = onCaptureSnapshot,
                 onOpenSettings = onOpenSettings,
-                compact = false
+                compact = false,
+                showFooterText = !isConciseMode
             )
         }
 

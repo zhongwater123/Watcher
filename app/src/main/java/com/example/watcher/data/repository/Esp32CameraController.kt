@@ -23,7 +23,7 @@ class Esp32CameraController(baseUrl: String = "http://192.168.4.1/") {
     suspend fun applyPreferredSettings(settings: VideoStreamSettings): ApplyResult {
         val normalized = settings.normalized()
         val preferredResolution = VideoStreamSettings.normalizeResolution(normalized.resolution)
-        if (preferredResolution != VideoStreamSettings.DEFAULT_RESOLUTION) {
+        if (preferredResolution != VideoStreamSettings.HD_RESOLUTION) {
             applyExactSettings(normalized)
             return ApplyResult(appliedSettings = normalized, usedFallback = false)
         }

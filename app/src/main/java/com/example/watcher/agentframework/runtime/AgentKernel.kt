@@ -15,7 +15,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 
 @Deprecated(
-    message = "Use AgentFrameworkService with AutonomousAgentRuntime as the primary agent runtime entry point.",
+    message = "Legacy runtime path. Use AgentFrameworkService with AutonomousAgentRuntime as the primary agent runtime entry point.",
     level = DeprecationLevel.WARNING
 )
 class AgentKernel(

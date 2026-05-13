@@ -158,13 +158,18 @@ class AutonomousAgentRuntime(
                     val decision = modules.decisionSelector.select(definition, reasoning, memory)
                     modules.memoryManager.onDecision(current.sessionId, decision)
                     val guardedDecision = modules.ruleConstraintEngine.apply(definition, decision, plan, current)
-                    val outcome = modules.executionCoordinator.execute(definition, current, guardedDecision)
-                    outcome.outputs.forEach { output ->
-                        modules.communicationHub.publish(current.sessionId, output)
-                        _events.emit(AutonomousAgentEvent.OutputPublished(current.sessionId, output))
-                    }
-                    val validation = modules.resultValidator.validate(goal, guardedDecision, outcome)
-                    modules.feedbackProcessor.process(current.sessionId, outcome, validation)
+                    val firstResult = executeAndValidate(current, goal, guardedDecision)
+                    val correctionResult = correctIfNeeded(
+                        cycle = cycle,
+                        runtimeSnapshot = current,
+                        goal = goal,
+                        guardedDecision = guardedDecision,
+                        outcome = firstResult.outcome,
+                        validation = firstResult.validation
+                    )
+                    val outcome = correctionResult.outcome
+                    val validation = correctionResult.validation
+                    val corrections = correctionResult.corrections
                     val record = AutonomousCycleRecord(
                         cycle = cycle,
                         perception = perception,
@@ -174,6 +179,7 @@ class AutonomousAgentRuntime(
                         guardedDecision = guardedDecision,
                         outcome = outcome,
                         validation = validation,
+                        corrections = corrections,
                         startedAt = cycleStartedAt
                     )
                     val metrics = modules.evaluationEngine.evaluate(record)
@@ -200,6 +206,17 @@ class AutonomousAgentRuntime(
                             lastValidation = validation,
                             outputs = outputs,
                             records = updatedRecords,
+                            correctionRecords = appendCorrections(
+                                state.correctionRecords,
+                                corrections
+                            ),
+                            failureCount = if (corrections.isNotEmpty() &&
+                                validation.status == ValidationStatus.Completed
+                            ) {
+                                0
+                            } else {
+                                state.failureCount
+                            },
                             errorMessage = null,
                             updatedAt = System.currentTimeMillis()
                         )
@@ -244,6 +261,7 @@ class AutonomousAgentRuntime(
                     }
                 } catch (error: Exception) {
                     if (error is CancellationException) throw error
+                    recordCycleExceptionCorrection(cycle, error)
                     val updated = mutateSnapshotAndGet { state ->
                         state.copy(
                             failureCount = state.failureCount + 1,
@@ -279,6 +297,167 @@ class AutonomousAgentRuntime(
                 stopReason = AutonomousStopReason.Cancelled
             )
         }
+    }
+
+    private data class ExecutionValidation(
+        val outcome: ExecutionOutcome,
+        val validation: ValidationOutcome
+    )
+
+    private data class CorrectionLoopResult(
+        val outcome: ExecutionOutcome,
+        val validation: ValidationOutcome,
+        val corrections: List<CorrectionRecord>
+    )
+
+    private suspend fun executeAndValidate(
+        runtimeSnapshot: AutonomousAgentSnapshot,
+        goal: ResolvedGoal,
+        guardedDecision: GuardedDecision
+    ): ExecutionValidation {
+        val outcome = modules.executionCoordinator.execute(definition, runtimeSnapshot, guardedDecision)
+        outcome.outputs.forEach { output ->
+            modules.communicationHub.publish(runtimeSnapshot.sessionId, output)
+            _events.emit(AutonomousAgentEvent.OutputPublished(runtimeSnapshot.sessionId, output))
+        }
+        val validation = modules.resultValidator.validate(goal, guardedDecision, outcome)
+        modules.feedbackProcessor.process(runtimeSnapshot.sessionId, outcome, validation)
+        return ExecutionValidation(outcome, validation)
+    }
+
+    private suspend fun correctIfNeeded(
+        cycle: Int,
+        runtimeSnapshot: AutonomousAgentSnapshot,
+        goal: ResolvedGoal,
+        guardedDecision: GuardedDecision,
+        outcome: ExecutionOutcome,
+        validation: ValidationOutcome
+    ): CorrectionLoopResult {
+        if (!config.enableReflectionCorrection) {
+            return CorrectionLoopResult(outcome, validation, emptyList())
+        }
+        val corrections = mutableListOf<CorrectionRecord>()
+        var currentOutcome = outcome
+        var currentValidation = validation
+
+        while (true) {
+            val trigger = correctionTrigger(guardedDecision, currentOutcome, currentValidation)
+                ?: break
+            val attempt = corrections.size + 1
+            val runtimeAttempts = snapshot.value.correctionRecords.size + corrections.size
+            val diagnosis = modules.reflectionEngine.reflect(
+                cycle = cycle,
+                attempt = attempt,
+                trigger = trigger,
+                decision = guardedDecision,
+                outcome = currentOutcome,
+                validation = currentValidation,
+                error = null
+            )
+            val correctionDecision = modules.correctionPolicy.decide(
+                diagnosis = diagnosis,
+                attemptInCycle = attempt,
+                runtimeAttempts = runtimeAttempts,
+                previousCorrections = snapshot.value.correctionRecords + corrections,
+                config = config
+            )
+            val record = CorrectionRecord(
+                cycle = cycle,
+                attempt = attempt,
+                trigger = trigger,
+                action = correctionDecision.action,
+                reason = correctionDecision.reason,
+                failureSignature = diagnosis.failureSignature,
+                validationStatus = currentValidation.status,
+                error = currentOutcome.error
+            )
+            corrections += record
+            modules.memoryManager.onCorrection(runtimeSnapshot.sessionId, record)
+
+            if (correctionDecision.action == CorrectionAction.AbortFailure) {
+                currentValidation = ValidationOutcome(
+                    status = ValidationStatus.Failed,
+                    shouldContinue = false,
+                    shouldRetry = false,
+                    feedback = correctionDecision.reason
+                )
+                break
+            }
+            if (correctionDecision.action != CorrectionAction.RetryOriginalDecision) {
+                break
+            }
+            if (attempt >= config.maxCorrectionAttemptsPerCycle ||
+                runtimeAttempts + 1 >= config.maxCorrectionAttemptsPerRuntime
+            ) {
+                break
+            }
+            val retried = executeAndValidate(runtimeSnapshot, goal, guardedDecision)
+            currentOutcome = retried.outcome
+            currentValidation = retried.validation
+            if (currentValidation.status == ValidationStatus.Completed) {
+                break
+            }
+        }
+
+        return CorrectionLoopResult(currentOutcome, currentValidation, corrections)
+    }
+
+    private fun correctionTrigger(
+        guardedDecision: GuardedDecision,
+        outcome: ExecutionOutcome,
+        validation: ValidationOutcome
+    ): CorrectionTrigger? {
+        return when {
+            !guardedDecision.allowed -> CorrectionTrigger.RuleBlocked
+            outcome.toolResults.any { !it.success } -> CorrectionTrigger.ToolFailure
+            validation.status == ValidationStatus.Partial -> CorrectionTrigger.ValidationPartial
+            validation.status == ValidationStatus.Failed -> CorrectionTrigger.ValidationFailed
+            else -> null
+        }
+    }
+
+    private suspend fun recordCycleExceptionCorrection(cycle: Int, error: Throwable) {
+        if (!config.enableReflectionCorrection) return
+        val diagnosis = modules.reflectionEngine.reflect(
+            cycle = cycle,
+            attempt = 1,
+            trigger = CorrectionTrigger.CycleException,
+            decision = null,
+            outcome = null,
+            validation = null,
+            error = error
+        )
+        val correctionDecision = modules.correctionPolicy.decide(
+            diagnosis = diagnosis,
+            attemptInCycle = 1,
+            runtimeAttempts = snapshot.value.correctionRecords.size,
+            previousCorrections = snapshot.value.correctionRecords,
+            config = config
+        )
+        val record = CorrectionRecord(
+            cycle = cycle,
+            attempt = 1,
+            trigger = CorrectionTrigger.CycleException,
+            action = correctionDecision.action,
+            reason = correctionDecision.reason,
+            failureSignature = diagnosis.failureSignature,
+            error = error.message
+        )
+        modules.memoryManager.onCorrection(snapshot.value.sessionId, record)
+        mutateSnapshot { state ->
+            state.copy(
+                correctionRecords = appendCorrections(state.correctionRecords, listOf(record))
+            )
+        }
+    }
+
+    private fun appendCorrections(
+        current: List<CorrectionRecord>,
+        additions: List<CorrectionRecord>
+    ): List<CorrectionRecord> {
+        if (additions.isEmpty()) return current
+        val limit = config.maxCorrectionRecords.coerceAtLeast(1)
+        return (current + additions).takeLast(limit)
     }
 
     private suspend fun setLifecycle(

@@ -61,7 +61,7 @@ import com.example.watcher.data.model.VideoTemplateEntity
         ObservationGoal::class,
         SceneProfile::class
     ],
-    version = 44,
+    version = 45,
     exportSchema = false
 )
 @TypeConverters(DatabaseConverters::class)
@@ -960,6 +960,17 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_44_45 = object : Migration(44, 45) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    "ALTER TABLE `video_stream_settings` ADD COLUMN `deviceId` TEXT NOT NULL DEFAULT ''"
+                )
+                database.execSQL(
+                    "ALTER TABLE `video_stream_settings` ADD COLUMN `mdnsUrl` TEXT NOT NULL DEFAULT ''"
+                )
+            }
+        }
+
         @Volatile
         private var instance: AppDatabase? = null
 
@@ -982,7 +993,7 @@ abstract class AppDatabase : RoomDatabase() {
             MIGRATION_31_32, MIGRATION_32_33, MIGRATION_33_34, MIGRATION_34_35,
             MIGRATION_35_36, MIGRATION_36_37, MIGRATION_37_38, MIGRATION_38_39,
             MIGRATION_39_40, MIGRATION_40_41, MIGRATION_41_42, MIGRATION_42_43,
-            MIGRATION_43_44
+            MIGRATION_43_44, MIGRATION_44_45
         )
     }
 }

@@ -3,8 +3,11 @@ package com.example.watcher.ui.viewmodel
 import com.example.watcher.data.model.HistoryRecordDetail
 import com.example.watcher.data.model.HistoryRecordSelection
 import com.example.watcher.data.model.HistoryRecordType
+import com.example.watcher.data.model.MonitorHistoryDetail
 import com.example.watcher.data.model.TimelineEventEntity
+import com.example.watcher.data.model.VideoHistoryDetail
 import com.example.watcher.data.repository.HistoryRepository
+import com.example.watcher.data.repository.HistoryTemplateConverter
 import com.example.watcher.data.repository.VideoProcessRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -15,13 +18,15 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 
 /**
- * Handles history record selection, deletion, and detail/event observation.
+ * Handles history record selection, deletion, detail/event observation,
+ * and history-to-template conversion.
  * Extracted from IntentViewModel.
  */
 internal class HistoryDelegate(
     private val scope: CoroutineScope,
     private val historyRepository: HistoryRepository,
     private val videoRepository: VideoProcessRepository,
+    private val historyTemplateConverter: HistoryTemplateConverter,
     private val selectedVideoRunId: MutableStateFlow<Long?>,
     private val selectedVideoRunEvents: MutableStateFlow<List<TimelineEventEntity>>
 ) {
@@ -78,6 +83,64 @@ internal class HistoryDelegate(
                     else historyRepository.observeHistoryDetail(selection)
                 }
                 .collect { detail -> _selectedDetail.value = detail }
+        }
+    }
+
+    fun saveAsTemplate(detail: HistoryRecordDetail, onResult: (Boolean, String) -> Unit) {
+        scope.launch {
+            when (detail) {
+                is MonitorHistoryDetail -> {
+                    val taskId = detail.run.taskId
+                    if (taskId == null) {
+                        onResult(false, "源任务关联缺失，无法保存为模板")
+                        return@launch
+                    }
+                    historyTemplateConverter.convertMonitorToTemplate(taskId)
+                        .onSuccess { entity ->
+                            historyTemplateConverter.saveMonitorTemplate(entity)
+                            onResult(true, "已保存为监控模板「${entity.label}」")
+                        }
+                        .onFailure { e ->
+                            onResult(false, e.message ?: "保存失败")
+                        }
+                }
+                is VideoHistoryDetail -> {
+                    historyTemplateConverter.convertVideoToTemplate(detail.run.taskId)
+                        .onSuccess { entity ->
+                            historyTemplateConverter.saveVideoTemplate(entity)
+                            onResult(true, "已保存为视频分析模板「${entity.label}」")
+                        }
+                        .onFailure { e ->
+                            onResult(false, e.message ?: "保存失败")
+                        }
+                }
+            }
+        }
+    }
+
+    fun shareAsTemplate(detail: HistoryRecordDetail, onResult: (String?) -> Unit) {
+        scope.launch {
+            when (detail) {
+                is MonitorHistoryDetail -> {
+                    val taskId = detail.run.taskId
+                    if (taskId == null) {
+                        onResult(null)
+                        return@launch
+                    }
+                    historyTemplateConverter.convertMonitorToTemplate(taskId)
+                        .onSuccess { entity ->
+                            onResult(historyTemplateConverter.exportMonitorAsShareText(entity))
+                        }
+                        .onFailure { onResult(null) }
+                }
+                is VideoHistoryDetail -> {
+                    historyTemplateConverter.convertVideoToTemplate(detail.run.taskId)
+                        .onSuccess { entity ->
+                            onResult(historyTemplateConverter.exportVideoAsShareText(entity))
+                        }
+                        .onFailure { onResult(null) }
+                }
+            }
         }
     }
 }

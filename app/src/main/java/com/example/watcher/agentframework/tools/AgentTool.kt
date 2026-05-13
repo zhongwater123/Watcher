@@ -37,6 +37,15 @@ class AgentToolRegistry : AgentToolExecutor {
         return this
     }
 
+    fun filtered(allowedToolNames: Set<String>?): AgentToolExecutor {
+        val normalized = allowedToolNames
+            ?.map { it.trim() }
+            ?.filter { it.isNotBlank() }
+            ?.toSet()
+            ?: return this
+        return FilteredAgentToolExecutor(this, normalized)
+    }
+
     override fun definitions(): List<AgentToolDefinition> = synchronized(lock) {
         tools.values.map { it.definition }
     }
@@ -62,5 +71,26 @@ class AgentToolRegistry : AgentToolExecutor {
                 error = error.message ?: "Tool execution failed"
             )
         }
+    }
+}
+
+private class FilteredAgentToolExecutor(
+    private val delegate: AgentToolExecutor,
+    private val allowedToolNames: Set<String>
+) : AgentToolExecutor {
+    override fun definitions(): List<AgentToolDefinition> {
+        return delegate.definitions().filter { it.name in allowedToolNames }
+    }
+
+    override suspend fun execute(call: AgentToolCall, context: AgentToolContext): AgentToolResult {
+        if (call.name !in allowedToolNames) {
+            return AgentToolResult(
+                callId = call.id,
+                toolName = call.name,
+                success = false,
+                error = "Tool not allowed for this runtime: ${call.name}"
+            )
+        }
+        return delegate.execute(call, context)
     }
 }

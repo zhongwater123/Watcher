@@ -6,12 +6,16 @@ import com.example.watcher.agentframework.autonomy.AutonomousAgentEvent
 import com.example.watcher.agentframework.autonomy.AutonomousAgentSnapshot
 import com.example.watcher.agentframework.autonomy.AutonomousLifecycleState
 import com.example.watcher.agentframework.autonomy.AutonomousStopReason
+import com.example.watcher.agentframework.autonomy.CorrectionAction
+import com.example.watcher.agentframework.autonomy.CorrectionRecord
+import com.example.watcher.agentframework.autonomy.CorrectionTrigger
 import com.example.watcher.agentframework.autonomy.PerceptionFrame
 import com.example.watcher.agentframework.autonomy.ResolvedGoal
 import com.example.watcher.agentframework.autonomy.SignalChannel
 import com.example.watcher.agentframework.autonomy.TaskPlan
 import com.example.watcher.agentframework.autonomy.ValidationOutcome
 import com.example.watcher.agentframework.autonomy.ValidationStatus
+import com.example.watcher.agentframework.core.AgentRunConfig
 import com.example.watcher.agentframework.core.AgentDefinition
 import com.example.watcher.agentframework.core.AgentMessageRole
 import com.example.watcher.agentframework.core.AgentSessionSnapshot
@@ -24,8 +28,13 @@ import com.example.watcher.agentframework.memory.AgentMemoryStore
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import java.io.File
+import java.io.IOException
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption.ATOMIC_MOVE
+import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -50,7 +59,7 @@ class FileBackedAgentProfileStore(
         return mutex.withLock {
             val file = profileFile(agentId)
             if (!file.exists()) return@withLock null
-            gson.fromJson(file.readText(), RegisteredAgentProfile::class.java)
+            gson.fromJson(file.readText(), RegisteredAgentProfile::class.java)?.normalize()
         }
     }
 
@@ -61,8 +70,8 @@ class FileBackedAgentProfileStore(
                 .filter { it.isFile && it.extension == "json" }
                 .mapNotNull { file ->
                     runCatching {
-                        gson.fromJson(file.readText(), RegisteredAgentProfile::class.java)
-                    }.onFailure { e -> onReadError?.invoke(file, e as Exception) }
+                        gson.fromJson(file.readText(), RegisteredAgentProfile::class.java)?.normalize()
+                    }.onFailure { e -> onReadError?.invoke(file, e.asException()) }
                         .getOrNull()
                 }
         }
@@ -120,7 +129,7 @@ class FileBackedAgentMemoryStore(
         if (!file.exists()) return emptyList()
         return runCatching {
             gson.fromJson<List<AgentMemoryEntry>>(file.readText(), type)
-        }.onFailure { e -> onReadError?.invoke(file, e as Exception) }
+        }.onFailure { e -> onReadError?.invoke(file, e.asException()) }
             .getOrNull().orEmpty()
     }
 
@@ -201,7 +210,7 @@ class FileBackedAgentKnowledgeStore(
         if (!file.exists()) return emptyList()
         return runCatching {
             gson.fromJson<List<AgentKnowledgeEntry>>(file.readText(), type)
-        }.onFailure { e -> onReadError?.invoke(file, e as Exception) }
+        }.onFailure { e -> onReadError?.invoke(file, e.asException()) }
             .getOrNull().orEmpty()
     }
 
@@ -252,7 +261,7 @@ class FileBackedAgentInvocationStore(
         if (!file.exists()) return emptyList()
         return runCatching {
             gson.fromJson<List<PersistedInvocationRecord>>(file.readText(), type)
-        }.onFailure { e -> onReadError?.invoke(file, e as Exception) }
+        }.onFailure { e -> onReadError?.invoke(file, e.asException()) }
             .getOrNull().orEmpty()
     }
 
@@ -307,7 +316,7 @@ class FileBackedAutonomousRuntimeRecordStore(
         if (!file.exists()) return emptyList()
         return runCatching {
             gson.fromJson<List<PersistedAutonomousRuntimeRecord>>(file.readText(), type)
-        }.onFailure { e -> onReadError?.invoke(file, e as Exception) }
+        }.onFailure { e -> onReadError?.invoke(file, e.asException()) }
             .getOrNull().orEmpty()
     }
 
@@ -357,10 +366,11 @@ private data class PersistedAutonomousRuntimeRecord(
     val agentId: String,
     val lifecycleState: String,
     val stopReason: String? = null,
-    val submittedSignals: List<PersistedSignal> = emptyList(),
-    val outputs: List<String> = emptyList(),
+    val submittedSignals: List<PersistedSignal>? = null,
+    val outputs: List<String>? = null,
     val snapshot: PersistedAutonomousSnapshot? = null,
-    val events: List<PersistedAutonomousEvent> = emptyList(),
+    val events: List<PersistedAutonomousEvent>? = null,
+    val correctionRecords: List<PersistedCorrectionRecord>? = null,
     val errorMessage: String? = null,
     val createdAt: Long,
     val updatedAt: Long
@@ -376,15 +386,16 @@ private data class PersistedAutonomousSnapshot(
     val idleCount: Int,
     val lastPerceptionSummary: String? = null,
     val lastGoalRoot: String? = null,
-    val lastGoalSubGoals: List<String> = emptyList(),
-    val lastGoalConstraints: List<String> = emptyList(),
+    val lastGoalSubGoals: List<String>? = null,
+    val lastGoalConstraints: List<String>? = null,
     val lastGoalPriority: Int? = null,
     val lastPlanSummary: String? = null,
-    val lastPlanSteps: List<String> = emptyList(),
-    val lastPlanPreferredTools: List<String> = emptyList(),
+    val lastPlanSteps: List<String>? = null,
+    val lastPlanPreferredTools: List<String>? = null,
     val lastValidationStatus: String? = null,
     val lastValidationFeedback: String? = null,
-    val outputs: List<String> = emptyList(),
+    val outputs: List<String>? = null,
+    val correctionRecords: List<PersistedCorrectionRecord>? = null,
     val errorMessage: String? = null,
     val createdAt: Long,
     val updatedAt: Long
@@ -408,6 +419,18 @@ private data class PersistedAutonomousEvent(
     val validationStatus: String? = null,
     val output: String? = null,
     val message: String? = null
+)
+
+private data class PersistedCorrectionRecord(
+    val cycle: Int,
+    val attempt: Int,
+    val trigger: String,
+    val action: String,
+    val reason: String,
+    val failureSignature: String,
+    val validationStatus: String? = null,
+    val error: String? = null,
+    val createdAt: Long
 )
 
 private fun AgentInvocationRecord.toPersisted(): PersistedInvocationRecord {
@@ -504,6 +527,7 @@ private fun AutonomousAgentRuntimeRecord.toPersisted(): PersistedAutonomousRunti
         outputs = outputs,
         snapshot = snapshot?.toPersisted(),
         events = events.map { it.toPersisted() },
+        correctionRecords = correctionRecords.map { it.toPersisted() },
         errorMessage = errorMessage,
         createdAt = createdAt,
         updatedAt = updatedAt
@@ -518,7 +542,7 @@ private fun PersistedAutonomousRuntimeRecord.toDomain(): AutonomousAgentRuntimeR
             AutonomousLifecycleState.valueOf(lifecycleState)
         }.getOrDefault(AutonomousLifecycleState.Created),
         stopReason = stopReason?.let { runCatching { AutonomousStopReason.valueOf(it) }.getOrNull() },
-        submittedSignals = submittedSignals.map {
+        submittedSignals = submittedSignals.orEmpty().map {
             AgentSignal(
                 id = it.id,
                 channel = runCatching { SignalChannel.valueOf(it.channel) }.getOrDefault(SignalChannel.System),
@@ -527,9 +551,10 @@ private fun PersistedAutonomousRuntimeRecord.toDomain(): AutonomousAgentRuntimeR
                 createdAt = it.createdAt
             )
         },
-        outputs = outputs,
+        outputs = outputs.orEmpty(),
         snapshot = snapshot?.toDomain(),
-        events = events.mapNotNull { it.toDomain() },
+        events = events.orEmpty().mapNotNull { it.toDomain() },
+        correctionRecords = correctionRecords.orEmpty().mapNotNull { it.toDomain() },
         errorMessage = errorMessage,
         createdAt = createdAt,
         updatedAt = updatedAt
@@ -556,6 +581,7 @@ private fun AutonomousAgentSnapshot.toPersisted(): PersistedAutonomousSnapshot {
         lastValidationStatus = lastValidation?.status?.name,
         lastValidationFeedback = lastValidation?.feedback,
         outputs = outputs,
+        correctionRecords = correctionRecords.map { it.toPersisted() },
         errorMessage = errorMessage,
         createdAt = createdAt,
         updatedAt = updatedAt
@@ -584,16 +610,16 @@ private fun PersistedAutonomousSnapshot.toDomain(): AutonomousAgentSnapshot {
         lastGoal = lastGoalRoot?.let { root ->
             ResolvedGoal(
                 rootGoal = root,
-                subGoals = lastGoalSubGoals,
-                constraints = lastGoalConstraints,
+                subGoals = lastGoalSubGoals.orEmpty(),
+                constraints = lastGoalConstraints.orEmpty(),
                 priority = lastGoalPriority ?: 50
             )
         },
         lastPlan = lastPlanSummary?.let { summary ->
             TaskPlan(
                 summary = summary,
-                steps = lastPlanSteps,
-                preferredTools = lastPlanPreferredTools
+                steps = lastPlanSteps.orEmpty(),
+                preferredTools = lastPlanPreferredTools.orEmpty()
             )
         },
         lastValidation = lastValidationStatus?.let { status ->
@@ -604,10 +630,64 @@ private fun PersistedAutonomousSnapshot.toDomain(): AutonomousAgentSnapshot {
                 feedback = lastValidationFeedback.orEmpty()
             )
         },
-        outputs = outputs,
+        outputs = outputs.orEmpty(),
+        correctionRecords = correctionRecords.orEmpty().mapNotNull { it.toDomain() },
         errorMessage = errorMessage,
         createdAt = createdAt,
         updatedAt = updatedAt
+    )
+}
+
+private fun RegisteredAgentProfile.normalize(): RegisteredAgentProfile {
+    return copy(config = config.normalize())
+}
+
+private fun AgentRunConfig.normalize(): AgentRunConfig {
+    val defaults = AgentRunConfig()
+    return copy(
+        maxSteps = maxSteps.takeIf { it > 0 } ?: defaults.maxSteps,
+        maxToolCallsPerStep = maxToolCallsPerStep.takeIf { it > 0 } ?: defaults.maxToolCallsPerStep,
+        maxConsecutiveFailures = maxConsecutiveFailures.takeIf { it > 0 } ?: defaults.maxConsecutiveFailures,
+        maxIdleTurns = maxIdleTurns.takeIf { it > 0 } ?: defaults.maxIdleTurns,
+        maxRuntimeMillis = maxRuntimeMillis.takeIf { it > 0L } ?: defaults.maxRuntimeMillis,
+        maxWaitMillis = maxWaitMillis.takeIf { it > 0L } ?: defaults.maxWaitMillis,
+        defaultWaitMillis = defaultWaitMillis.takeIf { it > 0L } ?: defaults.defaultWaitMillis,
+        maxHistoryItems = maxHistoryItems.takeIf { it > 0 } ?: defaults.maxHistoryItems,
+        toolTimeoutMillis = toolTimeoutMillis.takeIf { it > 0L } ?: defaults.toolTimeoutMillis,
+        maxCorrectionAttemptsPerStep = maxCorrectionAttemptsPerStep.takeIf { it > 0 } ?: defaults.maxCorrectionAttemptsPerStep,
+        maxCorrectionAttemptsPerRun = maxCorrectionAttemptsPerRun.takeIf { it > 0 } ?: defaults.maxCorrectionAttemptsPerRun
+    )
+}
+
+private fun CorrectionRecord.toPersisted(): PersistedCorrectionRecord {
+    return PersistedCorrectionRecord(
+        cycle = cycle,
+        attempt = attempt,
+        trigger = trigger.name,
+        action = action.name,
+        reason = reason,
+        failureSignature = failureSignature,
+        validationStatus = validationStatus?.name,
+        error = error,
+        createdAt = createdAt
+    )
+}
+
+private fun PersistedCorrectionRecord.toDomain(): CorrectionRecord? {
+    val triggerValue = runCatching { CorrectionTrigger.valueOf(trigger) }.getOrNull() ?: return null
+    val actionValue = runCatching { CorrectionAction.valueOf(action) }.getOrNull() ?: return null
+    return CorrectionRecord(
+        cycle = cycle,
+        attempt = attempt,
+        trigger = triggerValue,
+        action = actionValue,
+        reason = reason,
+        failureSignature = failureSignature,
+        validationStatus = validationStatus?.let {
+            runCatching { ValidationStatus.valueOf(it) }.getOrNull()
+        },
+        error = error,
+        createdAt = createdAt
     )
 }
 
@@ -698,16 +778,23 @@ private fun PersistedAutonomousEvent.toDomain(): AutonomousAgentEvent? {
 
 private fun atomicWriteText(target: File, content: String) {
     val tmp = File(target.parentFile, "${target.name}.tmp")
-    tmp.writeText(content)
-    if (!tmp.renameTo(target)) {
-        target.delete()
-        if (!tmp.renameTo(target)) {
-            tmp.delete()
-            target.writeText(content)
+    try {
+        tmp.writeText(content)
+        try {
+            Files.move(tmp.toPath(), target.toPath(), ATOMIC_MOVE, REPLACE_EXISTING)
+        } catch (_: AtomicMoveNotSupportedException) {
+            Files.move(tmp.toPath(), target.toPath(), REPLACE_EXISTING)
         }
+    } catch (e: Exception) {
+        tmp.delete()
+        throw IOException("Failed to write file-backed store: ${target.absolutePath}", e)
     }
 }
 
 private fun safeId(value: String): String {
     return URLEncoder.encode(value, StandardCharsets.UTF_8.toString())
+}
+
+private fun Throwable.asException(): Exception {
+    return this as? Exception ?: RuntimeException(message, this)
 }

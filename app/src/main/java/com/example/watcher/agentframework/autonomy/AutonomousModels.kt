@@ -33,6 +33,7 @@ enum class AutonomousStopReason {
     RuntimeLimitReached,
     IdleLimitReached,
     StoppedByRequest,
+    InterruptedByRestart,
     Cancelled,
     Error
 }
@@ -107,6 +108,45 @@ data class ExecutionOutcome(
     val durationMillis: Long = 0L
 )
 
+enum class CorrectionTrigger {
+    ToolFailure,
+    ValidationPartial,
+    ValidationFailed,
+    RuleBlocked,
+    CycleException
+}
+
+enum class CorrectionAction {
+    RetryOriginalDecision,
+    WaitForSignal,
+    AbortFailure,
+    AcceptPartial
+}
+
+data class CorrectionDiagnosis(
+    val trigger: CorrectionTrigger,
+    val reason: String,
+    val failureSignature: String,
+    val recoverable: Boolean
+)
+
+data class CorrectionDecision(
+    val action: CorrectionAction,
+    val reason: String
+)
+
+data class CorrectionRecord(
+    val cycle: Int,
+    val attempt: Int,
+    val trigger: CorrectionTrigger,
+    val action: CorrectionAction,
+    val reason: String,
+    val failureSignature: String,
+    val validationStatus: ValidationStatus? = null,
+    val error: String? = null,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
 enum class ValidationStatus {
     Running,
     Partial,
@@ -130,6 +170,7 @@ data class AutonomousCycleRecord(
     val guardedDecision: GuardedDecision,
     val outcome: ExecutionOutcome,
     val validation: ValidationOutcome,
+    val corrections: List<CorrectionRecord> = emptyList(),
     val startedAt: Long = System.currentTimeMillis(),
     val completedAt: Long = System.currentTimeMillis()
 )
@@ -140,7 +181,11 @@ data class AutonomousAgentConfig(
     val maxIdleCycles: Int = 2,
     val loopDelayMillis: Long = 200L,
     val maxRuntimeMillis: Long = 120_000L,
-    val maxRecords: Int? = null
+    val maxRecords: Int? = null,
+    val enableReflectionCorrection: Boolean = true,
+    val maxCorrectionAttemptsPerCycle: Int = 2,
+    val maxCorrectionAttemptsPerRuntime: Int = 8,
+    val maxCorrectionRecords: Int = 32
 )
 
 data class AutonomousAgentSnapshot(
@@ -160,6 +205,7 @@ data class AutonomousAgentSnapshot(
     val lastValidation: ValidationOutcome? = null,
     val outputs: List<String> = emptyList(),
     val records: List<AutonomousCycleRecord> = emptyList(),
+    val correctionRecords: List<CorrectionRecord> = emptyList(),
     val errorMessage: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis()

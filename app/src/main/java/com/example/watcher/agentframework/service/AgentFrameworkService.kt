@@ -275,6 +275,7 @@ class AgentFrameworkService(
         val profile = profileStore.get(request.agentId)
             ?: throw IllegalArgumentException("Missing agent profile: ${request.agentId}")
         val brain = resolveBrain(profile)
+        val toolExecutor = toolRegistry.filtered(request.allowedToolNames)
         val runtimeId = UUID.randomUUID().toString()
         val runtime = AutonomousAgentRuntime(
             definition = profile.definition,
@@ -282,7 +283,7 @@ class AgentFrameworkService(
             modules = modulesFactory.create(
                 profile = profile,
                 brain = brain,
-                toolRegistry = toolRegistry,
+                toolExecutor = toolExecutor,
                 memoryStore = memoryStore,
                 knowledgeStore = knowledgeStore,
                 memoryManager = autonomousMemoryManager,
@@ -600,6 +601,7 @@ class AgentFrameworkService(
                 stopReason = snapshot.stopReason,
                 outputs = snapshot.outputs,
                 snapshot = snapshot,
+                correctionRecords = snapshot.correctionRecords,
                 events = (handle.record.events + event).takeLast(maxRuntimeEvents),
                 errorMessage = snapshot.errorMessage,
                 updatedAt = System.currentTimeMillis()
@@ -636,6 +638,7 @@ class AgentFrameworkService(
                     stopReason = snapshot.stopReason,
                     outputs = snapshot.outputs,
                     snapshot = snapshot,
+                    correctionRecords = snapshot.correctionRecords,
                     errorMessage = snapshot.errorMessage,
                     updatedAt = System.currentTimeMillis()
                 )
@@ -675,6 +678,7 @@ class AgentFrameworkService(
                 stopReason = snapshot.stopReason,
                 outputs = snapshot.outputs,
                 snapshot = snapshot,
+                correctionRecords = snapshot.correctionRecords,
                 errorMessage = snapshot.errorMessage,
                 updatedAt = System.currentTimeMillis()
             )
@@ -688,7 +692,10 @@ private fun AgentRunConfig.toAutonomousConfig(): com.example.watcher.agentframew
         maxFailures = maxConsecutiveFailures,
         maxIdleCycles = maxIdleTurns,
         loopDelayMillis = defaultWaitMillis,
-        maxRuntimeMillis = maxRuntimeMillis
+        maxRuntimeMillis = maxRuntimeMillis,
+        enableReflectionCorrection = enableReflectionCorrection,
+        maxCorrectionAttemptsPerCycle = maxCorrectionAttemptsPerStep,
+        maxCorrectionAttemptsPerRuntime = maxCorrectionAttemptsPerRun
     )
 }
 
@@ -721,7 +728,10 @@ private fun AutonomousAgentRuntimeRecord.toInvocationStatus(): AgentInvocationSt
             else -> AgentInvocationStatus.Stopped
         }
         AutonomousLifecycleState.Failed -> AgentInvocationStatus.Failed
-        AutonomousLifecycleState.Destroyed -> AgentInvocationStatus.Cancelled
+        AutonomousLifecycleState.Destroyed -> when (stopReason) {
+            AutonomousStopReason.InterruptedByRestart -> AgentInvocationStatus.Interrupted
+            else -> AgentInvocationStatus.Cancelled
+        }
     }
 }
 
@@ -735,15 +745,11 @@ private fun com.example.watcher.agentframework.autonomy.AutonomousAgentSnapshot.
 }
 
 private fun AutonomousAgentRuntimeRecord.isTerminal(): Boolean {
-    return lifecycleState == AutonomousLifecycleState.Stopped ||
-        lifecycleState == AutonomousLifecycleState.Failed ||
-        lifecycleState == AutonomousLifecycleState.Destroyed
+    return lifecycleState.isTerminal
 }
 
 private fun com.example.watcher.agentframework.autonomy.AutonomousAgentSnapshot.isTerminal(): Boolean {
-    return lifecycleState == AutonomousLifecycleState.Stopped ||
-        lifecycleState == AutonomousLifecycleState.Failed ||
-        lifecycleState == AutonomousLifecycleState.Destroyed
+    return lifecycleState.isTerminal
 }
 
 private fun com.example.watcher.agentframework.autonomy.AutonomousAgentSnapshot.toSessionSnapshot(): AgentSessionSnapshot {
@@ -760,7 +766,11 @@ private fun com.example.watcher.agentframework.autonomy.AutonomousAgentSnapshot.
             AgentSessionStatus.Stopped
         }
         AutonomousLifecycleState.Failed -> AgentSessionStatus.Failed
-        AutonomousLifecycleState.Destroyed -> AgentSessionStatus.Cancelled
+        AutonomousLifecycleState.Destroyed -> if (stopReason == AutonomousStopReason.InterruptedByRestart) {
+            AgentSessionStatus.Interrupted
+        } else {
+            AgentSessionStatus.Cancelled
+        }
     }
     val sessionStopReason = when (stopReason) {
         AutonomousStopReason.GoalAchieved -> AgentStopReason.GoalAchieved
@@ -768,6 +778,7 @@ private fun com.example.watcher.agentframework.autonomy.AutonomousAgentSnapshot.
         AutonomousStopReason.RuntimeLimitReached -> AgentStopReason.RuntimeLimitReached
         AutonomousStopReason.IdleLimitReached -> AgentStopReason.IdleLimitReached
         AutonomousStopReason.StoppedByRequest -> AgentStopReason.StoppedByAgent
+        AutonomousStopReason.InterruptedByRestart -> AgentStopReason.InterruptedByRestart
         AutonomousStopReason.Cancelled -> AgentStopReason.Cancelled
         AutonomousStopReason.Error -> AgentStopReason.Error
         else -> null

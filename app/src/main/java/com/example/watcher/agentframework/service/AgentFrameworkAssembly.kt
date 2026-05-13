@@ -17,6 +17,7 @@ import com.example.watcher.agentframework.knowledge.InMemoryAgentKnowledgeStore
 import com.example.watcher.agentframework.memory.AgentMemoryStore
 import com.example.watcher.agentframework.memory.InMemoryAgentMemoryStore
 import com.example.watcher.agentframework.runtime.AgentBrain
+import com.example.watcher.agentframework.tools.AgentToolExecutor
 import com.example.watcher.agentframework.tools.AgentToolRegistry
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
@@ -60,7 +61,7 @@ interface AutonomousModulesFactory {
     fun create(
         profile: RegisteredAgentProfile,
         brain: AgentBrain,
-        toolRegistry: AgentToolRegistry,
+        toolExecutor: AgentToolExecutor,
         memoryStore: AgentMemoryStore,
         knowledgeStore: AgentKnowledgeStore,
         memoryManager: StructuredMemoryManager,
@@ -72,7 +73,7 @@ class DefaultAutonomousModulesFactory : AutonomousModulesFactory {
     override fun create(
         profile: RegisteredAgentProfile,
         brain: AgentBrain,
-        toolRegistry: AgentToolRegistry,
+        toolExecutor: AgentToolExecutor,
         memoryStore: AgentMemoryStore,
         knowledgeStore: AgentKnowledgeStore,
         memoryManager: StructuredMemoryManager,
@@ -80,7 +81,7 @@ class DefaultAutonomousModulesFactory : AutonomousModulesFactory {
     ): AutonomousAgentModules {
         return defaultAutonomousModules(
             brain = brain,
-            toolRegistry = toolRegistry,
+            toolExecutor = toolExecutor,
             memoryStore = memoryStore,
             knowledgeStore = knowledgeStore,
             memoryManager = memoryManager,
@@ -91,6 +92,7 @@ class DefaultAutonomousModulesFactory : AutonomousModulesFactory {
 }
 
 interface AgentRuntimeRecoveryPolicy {
+    // Current crash recovery records unfinished work as interrupted; it does not resume execution.
     suspend fun reconcile(
         invocationStore: AgentInvocationStore,
         runtimeRecordStore: AutonomousRuntimeRecordStore,
@@ -113,10 +115,10 @@ class CancelRunningExecutionsRecoveryPolicy : AgentRuntimeRecoveryPolicy {
                 runtimeRecordStore.upsert(
                     record.copy(
                         lifecycleState = AutonomousLifecycleState.Destroyed,
-                        stopReason = AutonomousStopReason.Cancelled,
+                        stopReason = AutonomousStopReason.InterruptedByRestart,
                         snapshot = record.snapshot?.copy(
                             lifecycleState = AutonomousLifecycleState.Destroyed,
-                            stopReason = AutonomousStopReason.Cancelled
+                            stopReason = AutonomousStopReason.InterruptedByRestart
                         ),
                         errorMessage = record.errorMessage
                             ?: "Runtime could not be resumed after service restart.",
@@ -129,7 +131,7 @@ class CancelRunningExecutionsRecoveryPolicy : AgentRuntimeRecoveryPolicy {
             if (record.status == AgentInvocationStatus.Pending || record.status == AgentInvocationStatus.Running) {
                 invocationStore.upsert(
                     record.copy(
-                        status = AgentInvocationStatus.Cancelled,
+                        status = AgentInvocationStatus.Interrupted,
                         errorMessage = record.errorMessage
                             ?: "Invocation could not be resumed after service restart.",
                         updatedAt = now

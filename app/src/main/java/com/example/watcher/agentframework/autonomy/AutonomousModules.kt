@@ -24,6 +24,7 @@ interface StructuredMemoryManager {
         validation: ValidationOutcome
     )
     suspend fun onLearning(sessionId: String, lesson: StructuredMemoryEntry)
+    suspend fun onCorrection(sessionId: String, record: CorrectionRecord) = Unit
     suspend fun clear(sessionId: String)
 }
 
@@ -110,6 +111,28 @@ interface LearningEngine {
     )
 }
 
+interface ReflectionEngine {
+    suspend fun reflect(
+        cycle: Int,
+        attempt: Int,
+        trigger: CorrectionTrigger,
+        decision: GuardedDecision?,
+        outcome: ExecutionOutcome?,
+        validation: ValidationOutcome?,
+        error: Throwable?
+    ): CorrectionDiagnosis
+}
+
+interface CorrectionPolicy {
+    suspend fun decide(
+        diagnosis: CorrectionDiagnosis,
+        attemptInCycle: Int,
+        runtimeAttempts: Int,
+        previousCorrections: List<CorrectionRecord>,
+        config: AutonomousAgentConfig
+    ): CorrectionDecision
+}
+
 interface CommunicationHub {
     suspend fun submit(sessionId: String, signal: AgentSignal)
     suspend fun drain(sessionId: String): List<AgentSignal>
@@ -132,5 +155,7 @@ data class AutonomousAgentModules(
     val feedbackProcessor: FeedbackProcessor,
     val evaluationEngine: EvaluationEngine,
     val learningEngine: LearningEngine,
+    val reflectionEngine: ReflectionEngine,
+    val correctionPolicy: CorrectionPolicy,
     val communicationHub: CommunicationHub
 )

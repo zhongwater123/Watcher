@@ -18,6 +18,7 @@ import com.example.watcher.agentframework.memory.InMemoryAgentMemoryStore
 import com.example.watcher.agentframework.runtime.AgentBrain
 import com.example.watcher.agentframework.runtime.AgentBrainRequest
 import com.example.watcher.agentframework.tools.AgentToolContext
+import com.example.watcher.agentframework.tools.AgentToolExecutor
 import com.example.watcher.agentframework.tools.AgentToolRegistry
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.sync.Mutex
@@ -95,7 +96,7 @@ class DefaultTaskPlanner : TaskPlanner {
 
 class BrainBackedReasoningEngine(
     private val brain: AgentBrain,
-    private val toolRegistry: AgentToolRegistry,
+    private val toolExecutor: AgentToolExecutor,
     private val memoryStore: AgentMemoryStore,
     private val knowledgeStore: AgentKnowledgeStore
 ) : ReasoningEngine {
@@ -107,6 +108,9 @@ class BrainBackedReasoningEngine(
         goal: ResolvedGoal,
         plan: TaskPlan
     ): ReasoningEnvelope {
+        val recentCorrections = memory.working
+            .filter { it.metadata["kind"] == "correction" }
+            .takeLast(3)
         val history = buildList {
             perception.cleanedSignals.takeLast(8).forEach { signal ->
                 add(
@@ -132,6 +136,10 @@ class BrainBackedReasoningEngine(
                         appendLine("Goal summary: ${goal.rootGoal}")
                         appendLine("Plan summary: ${plan.summary}")
                         appendLine("Perception summary: ${perception.contextSummary}")
+                        if (recentCorrections.isNotEmpty()) {
+                            appendLine("Recent correction context:")
+                            recentCorrections.forEach { appendLine("- ${it.content}") }
+                        }
                     }
                 ),
                 config = com.example.watcher.agentframework.core.AgentRunConfig(),
@@ -171,7 +179,7 @@ class BrainBackedReasoningEngine(
                 ),
                 knowledge = AgentKnowledgeSnapshot(entries = knowledgeStore.read(definition.agentId, limit = 20)),
                 recentInputs = emptyList(),
-                availableTools = toolRegistry.definitions()
+                availableTools = toolExecutor.definitions()
             )
         )
         return ReasoningEnvelope(
@@ -229,7 +237,7 @@ class DefaultRuleConstraintEngine(
 }
 
 class ToolCentricExecutionCoordinator(
-    private val toolRegistry: AgentToolRegistry,
+    private val toolExecutor: AgentToolExecutor,
     private val toolMemoryStore: AgentMemoryStore,
     private val toolKnowledgeStore: AgentKnowledgeStore,
     private val toolTimeoutMillis: Long = 30_000L
@@ -284,7 +292,7 @@ class ToolCentricExecutionCoordinator(
                 action.calls.forEach { call ->
                     val result = try {
                         withTimeout(toolTimeoutMillis) {
-                            toolRegistry.execute(call, context)
+                            toolExecutor.execute(call, context)
                         }
                     } catch (_: TimeoutCancellationException) {
                         com.example.watcher.agentframework.core.AgentToolResult(
@@ -415,6 +423,89 @@ class MemoryBackedLearningEngine(
     }
 }
 
+class DefaultReflectionEngine : ReflectionEngine {
+    override suspend fun reflect(
+        cycle: Int,
+        attempt: Int,
+        trigger: CorrectionTrigger,
+        decision: GuardedDecision?,
+        outcome: ExecutionOutcome?,
+        validation: ValidationOutcome?,
+        error: Throwable?
+    ): CorrectionDiagnosis {
+        val reason = when (trigger) {
+            CorrectionTrigger.RuleBlocked -> decision?.reason ?: "Action blocked by rule engine"
+            CorrectionTrigger.ToolFailure -> outcome?.error ?: firstToolError(outcome) ?: "Tool execution failed"
+            CorrectionTrigger.ValidationPartial -> validation?.feedback ?: "Validation reported partial progress"
+            CorrectionTrigger.ValidationFailed -> validation?.feedback ?: "Validation failed"
+            CorrectionTrigger.CycleException -> error?.message ?: "Autonomous cycle failed"
+        }
+        val signature = buildString {
+            append(trigger.name)
+            append(":")
+            append(reason.take(120))
+        }
+        val unrecoverable = reason.contains("Unknown tool", ignoreCase = true) ||
+            reason.contains("not allowed", ignoreCase = true)
+        return CorrectionDiagnosis(
+            trigger = trigger,
+            reason = reason,
+            failureSignature = signature,
+            recoverable = !unrecoverable
+        )
+    }
+
+    private fun firstToolError(outcome: ExecutionOutcome?): String? {
+        return outcome?.toolResults?.firstOrNull { !it.success }?.error
+    }
+}
+
+class DefaultCorrectionPolicy : CorrectionPolicy {
+    override suspend fun decide(
+        diagnosis: CorrectionDiagnosis,
+        attemptInCycle: Int,
+        runtimeAttempts: Int,
+        previousCorrections: List<CorrectionRecord>,
+        config: AutonomousAgentConfig
+    ): CorrectionDecision {
+        if (!config.enableReflectionCorrection) {
+            return CorrectionDecision(CorrectionAction.AbortFailure, "Reflection correction is disabled")
+        }
+        if (attemptInCycle > config.maxCorrectionAttemptsPerCycle ||
+            runtimeAttempts >= config.maxCorrectionAttemptsPerRuntime
+        ) {
+            return CorrectionDecision(CorrectionAction.AbortFailure, "Correction attempt limit reached")
+        }
+        val repeated = previousCorrections.takeLast(1).count {
+            it.failureSignature == diagnosis.failureSignature
+        } + 1
+        if (repeated >= 2) {
+            return CorrectionDecision(CorrectionAction.AbortFailure, "Repeated failure signature: ${diagnosis.failureSignature}")
+        }
+        if (!diagnosis.recoverable) {
+            return CorrectionDecision(CorrectionAction.AbortFailure, diagnosis.reason)
+        }
+        if (diagnosis.trigger == CorrectionTrigger.ToolFailure &&
+            diagnosis.reason.contains("timed out", ignoreCase = true)
+        ) {
+            return CorrectionDecision(CorrectionAction.RetryOriginalDecision, "Retry original decision after timeout")
+        }
+        return when (diagnosis.trigger) {
+            CorrectionTrigger.ValidationPartial -> {
+                CorrectionDecision(CorrectionAction.WaitForSignal, "Record partial result and continue with correction context")
+            }
+            CorrectionTrigger.ToolFailure -> {
+                CorrectionDecision(CorrectionAction.WaitForSignal, "Expose tool failure context to the next decision cycle")
+            }
+            CorrectionTrigger.ValidationFailed,
+            CorrectionTrigger.RuleBlocked,
+            CorrectionTrigger.CycleException -> {
+                CorrectionDecision(CorrectionAction.AbortFailure, diagnosis.reason)
+            }
+        }
+    }
+}
+
 class InMemoryCommunicationHub : CommunicationHub {
     private val maxSignalsPerSession: Int
     private val maxOutputsPerSession: Int
@@ -485,7 +576,7 @@ class InMemoryCommunicationHub : CommunicationHub {
 
 fun defaultAutonomousModules(
     brain: AgentBrain,
-    toolRegistry: AgentToolRegistry = AgentToolRegistry(),
+    toolExecutor: AgentToolExecutor = AgentToolRegistry(),
     memoryStore: AgentMemoryStore = InMemoryAgentMemoryStore(),
     knowledgeStore: AgentKnowledgeStore = InMemoryAgentKnowledgeStore(),
     memoryManager: StructuredMemoryManager = InMemoryStructuredMemoryManager(),
@@ -498,14 +589,16 @@ fun defaultAutonomousModules(
         memoryManager = memoryManager,
         goalParser = DefaultGoalParser(),
         taskPlanner = DefaultTaskPlanner(),
-        reasoningEngine = BrainBackedReasoningEngine(brain, toolRegistry, memoryStore, knowledgeStore),
+        reasoningEngine = BrainBackedReasoningEngine(brain, toolExecutor, memoryStore, knowledgeStore),
         decisionSelector = DefaultDecisionSelector(),
         ruleConstraintEngine = DefaultRuleConstraintEngine(),
-        executionCoordinator = ToolCentricExecutionCoordinator(toolRegistry, memoryStore, knowledgeStore, toolTimeoutMillis),
+        executionCoordinator = ToolCentricExecutionCoordinator(toolExecutor, memoryStore, knowledgeStore, toolTimeoutMillis),
         resultValidator = DefaultResultValidator(),
         feedbackProcessor = MemoryBackedFeedbackProcessor(memoryManager),
         evaluationEngine = DefaultEvaluationEngine(),
         learningEngine = MemoryBackedLearningEngine(memoryManager),
+        reflectionEngine = DefaultReflectionEngine(),
+        correctionPolicy = DefaultCorrectionPolicy(),
         communicationHub = communicationHub
     )
 }

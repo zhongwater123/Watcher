@@ -42,6 +42,10 @@ class WatcherApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+    }
+
+    /** Called after startup video finishes (or immediately if no video). */
+    fun initializeLiteRt() {
         appScope.launch {
             val container = agentFrameworkContainer
             container.liteRtAssetInstaller.installBundledModelIfNeeded()

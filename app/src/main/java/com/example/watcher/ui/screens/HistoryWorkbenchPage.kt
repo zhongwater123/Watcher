@@ -18,8 +18,11 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -66,9 +69,15 @@ internal fun HistoryWorkbenchPage(
     selectedDetail: HistoryRecordDetail?,
     onSelectRecord: (HistoryRecordSelection?) -> Unit,
     onDeleteRecord: (HistoryRecordSelection) -> Unit,
+    onSaveAsTemplate: (HistoryRecordDetail) -> Unit,
+    onShareAsTemplate: (HistoryRecordDetail) -> Unit,
     onOpenSettings: () -> Unit,
     onOpenAgentConfig: () -> Unit,
     onOpenWalletConfig: () -> Unit,
+    isConciseMode: Boolean,
+    onConciseModeChange: (Boolean) -> Unit,
+    rotaryRotationDegrees: Float,
+    onRotaryRotationChange: (Float) -> Unit,
     currentPage: HubPage,
     isVisible: Boolean,
     pageOffset: Float
@@ -83,6 +92,11 @@ internal fun HistoryWorkbenchPage(
                 subtitle = header.subtitle,
                 currentPage = currentPage,
                 pageOffset = pageOffset,
+                showConciseModeToggle = true,
+                isConciseMode = isConciseMode,
+                onConciseModeChange = onConciseModeChange,
+                rotaryRotationDegrees = rotaryRotationDegrees,
+                onRotaryRotationChange = onRotaryRotationChange,
                 onOpenSettings = onOpenSettings,
                 onOpenAgentConfig = onOpenAgentConfig,
                 onOpenWalletConfig = onOpenWalletConfig
@@ -105,6 +119,8 @@ internal fun HistoryWorkbenchPage(
             HistoryDetailCard(
                 detail = selectedDetail,
                 onDeleteRecord = onDeleteRecord,
+                onSaveAsTemplate = onSaveAsTemplate,
+                onShareAsTemplate = onShareAsTemplate,
                 isVisible = isVisible
             )
         }
@@ -185,6 +201,8 @@ private fun HistoryTimelineCard(
 private fun HistoryDetailCard(
     detail: HistoryRecordDetail?,
     onDeleteRecord: (HistoryRecordSelection) -> Unit,
+    onSaveAsTemplate: (HistoryRecordDetail) -> Unit,
+    onShareAsTemplate: (HistoryRecordDetail) -> Unit,
     isVisible: Boolean
 ) {
     WatcherCard {
@@ -235,6 +253,39 @@ private fun HistoryDetailCard(
                 )
 
                 is MonitorHistoryDetail -> MonitorHistoryDetailContent(detail = detail)
+            }
+
+            val canConvert = when (detail) {
+                is MonitorHistoryDetail -> detail.run.taskId != null && detail.canDelete
+                is VideoHistoryDetail -> detail.canDelete
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    onClick = { onSaveAsTemplate(detail) },
+                    enabled = canConvert,
+                    shape = RoundedCornerShape(18.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.tertiary
+                    )
+                ) {
+                    androidx.compose.material3.Icon(Icons.Default.Bookmark, contentDescription = null)
+                    Text(modifier = Modifier.padding(start = 6.dp), text = "存为模板")
+                }
+                Button(
+                    onClick = { onShareAsTemplate(detail) },
+                    enabled = canConvert,
+                    shape = RoundedCornerShape(18.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.secondary
+                    )
+                ) {
+                    androidx.compose.material3.Icon(Icons.Default.Share, contentDescription = null)
+                    Text(modifier = Modifier.padding(start = 6.dp), text = "分享配置")
+                }
             }
 
             Button(

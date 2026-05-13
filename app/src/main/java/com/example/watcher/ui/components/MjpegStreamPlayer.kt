@@ -89,7 +89,8 @@ fun rememberMjpegStreamState(
     isPlaying: Boolean,
     reconnectToken: Int = 0,
     onFrameUpdate: (Bitmap?) -> Unit = {},
-    onStreamSourceChanged: (StreamSource) -> Unit = {}
+    onStreamSourceChanged: (StreamSource) -> Unit = {},
+    onRemoteStreamUnavailable: () -> Unit = {}
 ): MjpegStreamUiState {
     var currentFrame by remember { mutableStateOf<Bitmap?>(null) }
     var connectionStatus by remember { mutableStateOf<ConnectionStatus>(ConnectionStatus.Disconnected) }
@@ -261,6 +262,7 @@ fun rememberMjpegStreamState(
             } finally {
                 withContext(Dispatchers.Main) {
                     if (shouldUseFallback) {
+                        onRemoteStreamUnavailable()
                         fallbackRequested = true
                         currentFrame = null
                         fps = 0
@@ -321,13 +323,15 @@ fun MjpegStreamPlayer(
     onFrameCaptured: (Bitmap) -> Unit = {},
     onFrameUpdate: (Bitmap?) -> Unit = {},
     onStreamSourceChanged: (StreamSource) -> Unit = {},
+    onRemoteStreamUnavailable: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val streamState = rememberMjpegStreamState(
         settings = settings,
         isPlaying = isPlaying,
         onFrameUpdate = onFrameUpdate,
-        onStreamSourceChanged = onStreamSourceChanged
+        onStreamSourceChanged = onStreamSourceChanged,
+        onRemoteStreamUnavailable = onRemoteStreamUnavailable
     )
 
     val connectionAccent = when (streamState.connectionStatus) {

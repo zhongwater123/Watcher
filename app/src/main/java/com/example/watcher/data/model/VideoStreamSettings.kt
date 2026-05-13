@@ -8,6 +8,8 @@ data class VideoStreamSettings(
     @PrimaryKey val id: Int = 1,
     val ipAddress: String = DEFAULT_DEVICE_IP,
     val port: Int = DEFAULT_PORT,
+    val deviceId: String = "",
+    val mdnsUrl: String = "",
     val resolution: String = DEFAULT_RESOLUTION,
     val quality: Int = 10,
     val brightness: Int = 0,
@@ -28,8 +30,9 @@ data class VideoStreamSettings(
         const val DEFAULT_PORT = 80
         const val LEGACY_STREAM_PORT = 81
         const val DEFAULT_STREAM_PORT = 81
-        const val DEFAULT_RESOLUTION = "HD"
+        const val HD_RESOLUTION = "HD"
         const val FALLBACK_RESOLUTION = "VGA"
+        const val DEFAULT_RESOLUTION = FALLBACK_RESOLUTION
         const val HD_FRAMESIZE = 11
         const val VGA_FRAMESIZE = 8
         const val QVGA_FRAMESIZE = 5
@@ -41,7 +44,7 @@ data class VideoStreamSettings(
         fun normalizeResolution(value: String): String {
             return when (value.trim().uppercase()) {
                 "HD",
-                "1280X720" -> DEFAULT_RESOLUTION
+                "1280X720" -> HD_RESOLUTION
                 "VGA",
                 "640X480" -> FALLBACK_RESOLUTION
                 "QVGA",
@@ -52,7 +55,7 @@ data class VideoStreamSettings(
 
         fun framesizeValueFor(resolution: String): Int {
             return when (normalizeResolution(resolution)) {
-                DEFAULT_RESOLUTION -> HD_FRAMESIZE
+                HD_RESOLUTION -> HD_FRAMESIZE
                 FALLBACK_RESOLUTION -> VGA_FRAMESIZE
                 "QVGA" -> QVGA_FRAMESIZE
                 else -> HD_FRAMESIZE
@@ -96,6 +99,8 @@ data class VideoStreamSettings(
         return copy(
             ipAddress = ipAddress.trim().ifBlank { DEFAULT_DEVICE_IP },
             port = normalizedPort,
+            deviceId = deviceId.trim(),
+            mdnsUrl = mdnsUrl.trim(),
             resolution = normalizeResolution(resolution),
             quality = quality.coerceIn(4, 63),
             brightness = brightness.coerceIn(-2, 2),

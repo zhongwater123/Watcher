@@ -1,7 +1,10 @@
 package com.example.watcher.data.repository
 
+import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
+import android.os.Environment
+import android.provider.MediaStore
 import java.io.File
 import java.io.FileOutputStream
 import java.io.InputStream
@@ -13,9 +16,8 @@ class SnapshotStore(
     private val context: Context
 ) {
     fun save(bitmap: Bitmap): String? {
-        return save(
+        return saveToGallery(
             bitmap = bitmap,
-            directory = "Snapshots",
             prefix = "SNAPSHOT"
         )
     }
@@ -34,6 +36,34 @@ class SnapshotStore(
                 bitmap.compress(Bitmap.CompressFormat.JPEG, quality.coerceIn(1, 100), stream)
             }
             file.absolutePath
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun saveToGallery(
+        bitmap: Bitmap,
+        prefix: String,
+        quality: Int = 90
+    ): String? {
+        return try {
+            val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
+            val fileName = "${prefix}_$timestamp.jpg"
+            val contentValues = ContentValues().apply {
+                put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
+                put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                put(
+                    MediaStore.Images.Media.RELATIVE_PATH,
+                    "${Environment.DIRECTORY_PICTURES}/Watcher"
+                )
+            }
+            val resolver = context.contentResolver
+            val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
+                ?: return null
+            resolver.openOutputStream(uri)?.use { stream ->
+                bitmap.compress(Bitmap.CompressFormat.JPEG, quality.coerceIn(1, 100), stream)
+            }
+            uri.toString()
         } catch (_: Exception) {
             null
         }

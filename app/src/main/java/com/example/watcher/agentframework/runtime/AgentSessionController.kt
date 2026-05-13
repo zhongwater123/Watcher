@@ -44,7 +44,7 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.sync.withLock
 
 @Deprecated(
-    message = "Use AgentFrameworkService with AutonomousAgentRuntime as the primary agent runtime entry point.",
+    message = "Legacy runtime path. Use AgentFrameworkService with AutonomousAgentRuntime as the primary agent runtime entry point.",
     level = DeprecationLevel.WARNING
 )
 class AgentSessionController internal constructor(

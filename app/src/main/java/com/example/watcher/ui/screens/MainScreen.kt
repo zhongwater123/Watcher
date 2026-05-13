@@ -70,6 +70,8 @@ import com.example.watcher.ui.components.WorkspaceBackdrop
 import com.example.watcher.ui.components.calculatePageOffset
 import com.example.watcher.ui.components.calculatePagerPosition
 import com.example.watcher.ui.components.rememberMjpegStreamState
+import com.example.watcher.ui.util.PageConciseModeController
+import com.example.watcher.ui.util.PageConciseModeStore
 import com.example.watcher.ui.viewmodel.IntentViewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -82,6 +84,7 @@ private const val KEY_PAGER_COACHMARK_SEEN = "pager_coachmark_seen_v1"
 
 @Composable
 fun MainScreen(
+    manageSystemBars: Boolean = true,
     viewModel: IntentViewModel = viewModel(
         factory = androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.getInstance(
             LocalContext.current.applicationContext as android.app.Application
@@ -93,6 +96,9 @@ fun MainScreen(
     val coroutineScope = rememberCoroutineScope()
     val hintPreferences = remember {
         context.getSharedPreferences(UI_HINT_PREFS, Activity.MODE_PRIVATE)
+    }
+    val conciseModeController = remember(context) {
+        PageConciseModeController(PageConciseModeStore(context))
     }
 
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -154,6 +160,12 @@ fun MainScreen(
     var pendingNavigationPage by rememberSaveable {
         mutableStateOf<Int?>(null)
     }
+    var sharedRotaryRotationDegrees by rememberSaveable {
+        mutableStateOf(0f)
+    }
+    var conciseModes by remember {
+        mutableStateOf(conciseModeController.initialModes())
+    }
     val pagerPosition by remember(pagerState) {
         derivedStateOf {
             if (pagerState.isScrollInProgress) {
@@ -176,7 +188,8 @@ fun MainScreen(
         isPlaying = isStreamPlaying,
         reconnectToken = streamReconnectToken,
         onFrameUpdate = viewModel::updateVideoFrame,
-        onStreamSourceChanged = viewModel::updateStreamSource
+        onStreamSourceChanged = viewModel::updateStreamSource,
+        onRemoteStreamUnavailable = viewModel::recoverProvisionedDeviceAfterRuntimeDisconnect
     )
 
     // Orientation detection — landscape triggers immersive live room
@@ -185,7 +198,8 @@ fun MainScreen(
 
     // Hide system bars in landscape, restore in portrait
     val view = LocalView.current
-    DisposableEffect(isLandscape) {
+    DisposableEffect(isLandscape, manageSystemBars) {
+        if (!manageSystemBars) return@DisposableEffect onDispose {}
         val window = (view.context as? Activity)?.window
             ?: return@DisposableEffect onDispose {}
         val insetsController = WindowCompat.getInsetsController(window, view)
@@ -264,6 +278,11 @@ fun MainScreen(
         {
             showPagerCoachmark = false
             hintPreferences.edit().putBoolean(KEY_PAGER_COACHMARK_SEEN, true).apply()
+        }
+    }
+    val updateConciseMode = remember(conciseModeController) {
+        { page: HubPage, enabled: Boolean ->
+            conciseModes = conciseModeController.updateMode(conciseModes, page, enabled)
         }
     }
 
@@ -373,8 +392,22 @@ fun MainScreen(
             onDismissRequest = viewModel::dismissAppUpdatePrompt,
             title = { Text("发现新版本") },
             text = {
+                val fingerprint = remember(prompt.apkSha256) {
+                    prompt.apkSha256.take(12)
+                }
                 Text(
-                    "当前版本 ${prompt.currentVersion}\n最新版本 ${prompt.latestVersion}\n建议前往下载页更新安装包。"
+                    buildString {
+                        appendLine("当前版本 ${prompt.currentVersion}")
+                        appendLine("最新版本 ${prompt.latestVersion}")
+                        if (prompt.isVerified) {
+                            appendLine("更新信息已验签")
+                        }
+                        appendLine("APK 指纹 ${fingerprint}...")
+                        prompt.releaseNotes?.takeIf { it.isNotBlank() }?.let {
+                            appendLine()
+                            appendLine(it.trim())
+                        }
+                    }.trim()
                 )
             },
             confirmButton = {
@@ -529,6 +562,10 @@ fun MainScreen(
                         onOpenSettings = { showSettingsDialog = true },
                         onOpenAgentConfig = { context.startActivity(AgentConfigActivity.createIntent(context)) },
                         onOpenWalletConfig = { context.startActivity(ApiWalletActivity.createIntent(context)) },
+                        isConciseMode = conciseModeController.isConciseMode(conciseModes, HubPage.Monitor),
+                        onConciseModeChange = { updateConciseMode(HubPage.Monitor, it) },
+                        rotaryRotationDegrees = sharedRotaryRotationDegrees,
+                        onRotaryRotationChange = { sharedRotaryRotationDegrees = it },
                         currentPage = HubPage.Monitor,
                         pageOffset = pageOffset
                     )
@@ -547,6 +584,10 @@ fun MainScreen(
                         onOpenSettings = { showSettingsDialog = true },
                         onOpenAgentConfig = { context.startActivity(AgentConfigActivity.createIntent(context)) },
                         onOpenWalletConfig = { context.startActivity(ApiWalletActivity.createIntent(context)) },
+                        isConciseMode = conciseModeController.isConciseMode(conciseModes, HubPage.Hub),
+                        onConciseModeChange = { updateConciseMode(HubPage.Hub, it) },
+                        rotaryRotationDegrees = sharedRotaryRotationDegrees,
+                        onRotaryRotationChange = { sharedRotaryRotationDegrees = it },
                         onNavigateMonitor = { navigateTo(HubPage.Monitor) },
                         onNavigateAnalysis = { navigateTo(HubPage.Analysis) },
                         onNavigateDigitalLifeCard = {
@@ -610,6 +651,10 @@ fun MainScreen(
                         onOpenSettings = { showSettingsDialog = true },
                         onOpenAgentConfig = { context.startActivity(AgentConfigActivity.createIntent(context)) },
                         onOpenWalletConfig = { context.startActivity(ApiWalletActivity.createIntent(context)) },
+                        isConciseMode = conciseModeController.isConciseMode(conciseModes, HubPage.Analysis),
+                        onConciseModeChange = { updateConciseMode(HubPage.Analysis, it) },
+                        rotaryRotationDegrees = sharedRotaryRotationDegrees,
+                        onRotaryRotationChange = { sharedRotaryRotationDegrees = it },
                         currentPage = HubPage.Analysis,
                         pageOffset = pageOffset
                     )
@@ -621,9 +666,28 @@ fun MainScreen(
                         selectedDetail = selectedHistoryDetail,
                         onSelectRecord = viewModel::selectHistoryRecord,
                         onDeleteRecord = viewModel::deleteHistoryRecord,
+                        onSaveAsTemplate = { detail ->
+                            viewModel.saveHistoryAsTemplate(detail) { _, message ->
+                                Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        onShareAsTemplate = { detail ->
+                            viewModel.shareHistoryAsTemplate(detail) { shareText ->
+                                if (shareText != null) {
+                                    clipboardManager.setText(AnnotatedString(shareText))
+                                    Toast.makeText(context, "已复制到剪贴板，可粘贴分享", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    Toast.makeText(context, "源任务已被删除，无法分享", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        },
                         onOpenSettings = { showSettingsDialog = true },
                         onOpenAgentConfig = { context.startActivity(AgentConfigActivity.createIntent(context)) },
                         onOpenWalletConfig = { context.startActivity(ApiWalletActivity.createIntent(context)) },
+                        isConciseMode = conciseModeController.isConciseMode(conciseModes, HubPage.History),
+                        onConciseModeChange = { updateConciseMode(HubPage.History, it) },
+                        rotaryRotationDegrees = sharedRotaryRotationDegrees,
+                        onRotaryRotationChange = { sharedRotaryRotationDegrees = it },
                         currentPage = HubPage.History,
                         isVisible = currentPage == HubPage.History,
                         pageOffset = pageOffset
@@ -654,6 +718,10 @@ fun MainScreen(
                         onOpenSettings = { showSettingsDialog = true },
                         onOpenAgentConfig = { context.startActivity(AgentConfigActivity.createIntent(context)) },
                         onOpenWalletConfig = { context.startActivity(ApiWalletActivity.createIntent(context)) },
+                        isConciseMode = conciseModeController.isConciseMode(conciseModes, HubPage.Templates),
+                        onConciseModeChange = { updateConciseMode(HubPage.Templates, it) },
+                        rotaryRotationDegrees = sharedRotaryRotationDegrees,
+                        onRotaryRotationChange = { sharedRotaryRotationDegrees = it },
                         onSaveProvider = viewModel::saveProvider,
                         onDeleteProvider = viewModel::deleteProvider,
                         onSaveAudience = viewModel::saveAudience,
@@ -784,9 +852,9 @@ private fun rememberSnapshotCapturer(
         { bitmap ->
             val path = viewModel.saveSnapshot(bitmap)
             val message = if (path != null) {
-                "截图已保存：$path"
+                "截图已保存至相册"
             } else {
-                "Failed to save the snapshot."
+                "保存截图失败"
             }
             toast(message)
         }

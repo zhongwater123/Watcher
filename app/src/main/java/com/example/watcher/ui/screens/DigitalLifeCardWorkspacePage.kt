@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -15,9 +16,8 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Psychology
-import androidx.compose.material.icons.filled.Storage
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -37,7 +37,10 @@ import com.example.watcher.data.model.VideoStreamSettings
 import com.example.watcher.data.repository.PortraitCuratorActivityEntry
 import com.example.watcher.data.repository.PortraitCuratorMemoryDebugState
 import com.example.watcher.data.repository.PortraitCuratorStatus
+import com.example.watcher.ui.components.ConciseModeToggleChip
 import com.example.watcher.ui.components.MjpegStreamUiState
+import com.example.watcher.ui.components.RotaryActionCluster
+import com.example.watcher.ui.components.RotaryActionItem
 import com.example.watcher.ui.components.WorkspaceBackdrop
 import com.example.watcher.ui.viewmodel.BlackboardDebugUiState
 import com.example.watcher.ui.viewmodel.ClaimConsolidationUiState
@@ -49,7 +52,10 @@ internal fun DigitalLifeCardWorkspacePage(
     streamState: MjpegStreamUiState,
     isStreamPlaying: Boolean,
     commentaryState: LiveCommentaryState,
-    onBack: () -> Unit,
+    isConciseMode: Boolean,
+    rotaryRotationDegrees: Float,
+    onConciseModeChange: (Boolean) -> Unit,
+    onRotaryRotationChange: (Float) -> Unit,
     onPlayingChange: (Boolean) -> Unit,
     onReconnectStream: () -> Unit,
     onCaptureSnapshot: (Bitmap) -> Unit,
@@ -86,6 +92,24 @@ internal fun DigitalLifeCardWorkspacePage(
     agentMemoryDebugState: PortraitCuratorMemoryDebugState = PortraitCuratorMemoryDebugState(),
     agentStatus: PortraitCuratorStatus = PortraitCuratorStatus.Idle
 ) {
+    val rotaryItems = listOf(
+        RotaryActionItem(
+            icon = Icons.Default.VpnKey,
+            contentDescription = "Open API wallet",
+            onClick = onOpenWalletConfig
+        ),
+        RotaryActionItem(
+            icon = Icons.Default.Psychology,
+            contentDescription = "Open agent settings",
+            onClick = onOpenAgentConfig
+        ),
+        RotaryActionItem(
+            icon = Icons.Default.Settings,
+            contentDescription = "Open camera settings",
+            onClick = onOpenSettings
+        )
+    )
+
     Box(modifier = Modifier.fillMaxSize()) {
         WorkspaceBackdrop(
             pagerPosition = 1.6f,
@@ -103,7 +127,7 @@ internal fun DigitalLifeCardWorkspacePage(
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
                 verticalAlignment = Alignment.Top
             ) {
                 Column(
@@ -124,27 +148,24 @@ internal fun DigitalLifeCardWorkspacePage(
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    ConciseModeToggleChip(
+                        isConciseMode = isConciseMode,
+                        accent = MaterialTheme.colorScheme.tertiary,
+                        onToggle = { onConciseModeChange(!isConciseMode) }
+                    )
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    HeaderActionButton(
-                        icon = Icons.Default.VpnKey,
-                        contentDescription = "Open API wallet",
-                        onClick = onOpenWalletConfig
-                    )
-                    HeaderActionButton(
-                        icon = Icons.Default.Psychology,
-                        contentDescription = "Open agent settings",
-                        onClick = onOpenAgentConfig
-                    )
-                    HeaderActionButton(
-                        icon = Icons.Default.Storage,
-                        contentDescription = "Open camera settings",
-                        onClick = onOpenSettings
-                    )
-                    HeaderActionButton(
-                        icon = Icons.Default.ArrowBack,
-                        contentDescription = "返回首页",
-                        onClick = onBack
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(176.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    RotaryActionCluster(
+                        items = rotaryItems,
+                        accent = MaterialTheme.colorScheme.tertiary,
+                        glassOverlay = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+                        rotationDegrees = rotaryRotationDegrees,
+                        onRotationChange = onRotaryRotationChange
                     )
                 }
             }

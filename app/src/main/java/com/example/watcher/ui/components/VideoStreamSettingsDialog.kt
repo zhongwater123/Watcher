@@ -64,7 +64,10 @@ fun VideoStreamSettingsDialog(
 ) {
     var ipAddress by remember { mutableStateOf(settings?.ipAddress ?: VideoStreamSettings.DEFAULT_DEVICE_IP) }
     var port by remember { mutableStateOf(settings?.port?.toString() ?: VideoStreamSettings.DEFAULT_PORT.toString()) }
-    var quality by remember { mutableStateOf(settings?.quality?.toString() ?: "10") }
+    var deviceId by remember { mutableStateOf(settings?.deviceId.orEmpty()) }
+    var mdnsUrl by remember { mutableStateOf(settings?.mdnsUrl.orEmpty()) }
+    var resolution by remember { mutableStateOf(settings?.resolution ?: VideoStreamSettings.DEFAULT_RESOLUTION) }
+    var qualityInput by remember { mutableStateOf(settings?.quality?.toString() ?: "10") }
     var ledControlEnabled by remember { mutableStateOf(settings?.ledControlEnabled ?: true) }
     var ledAutoLightEnabled by remember { mutableStateOf(settings?.ledAutoLightEnabled ?: true) }
     var ledTargetBrightness by remember { mutableStateOf(settings?.ledTargetBrightness?.toString() ?: "100") }
@@ -91,6 +94,9 @@ fun VideoStreamSettingsDialog(
     LaunchedEffect(
         settings?.ipAddress,
         settings?.port,
+        settings?.deviceId,
+        settings?.mdnsUrl,
+        settings?.resolution,
         settings?.quality,
         settings?.ledControlEnabled,
         settings?.ledAutoLightEnabled,
@@ -105,7 +111,10 @@ fun VideoStreamSettingsDialog(
         settings?.let {
             ipAddress = it.ipAddress
             port = it.port.toString()
-            quality = it.quality.toString()
+            deviceId = it.deviceId
+            mdnsUrl = it.mdnsUrl
+            resolution = it.resolution
+            qualityInput = it.quality.toString()
             ledControlEnabled = it.ledControlEnabled
             ledAutoLightEnabled = it.ledAutoLightEnabled
             ledTargetBrightness = it.ledTargetBrightness.toString()
@@ -209,68 +218,112 @@ fun VideoStreamSettingsDialog(
                         ) {
                             Text("恢复热点默认地址")
                         }
-                    } else {
-                        FilledTonalButton(
-                            onClick = onScanDevices,
-                            enabled = !scanState.isScanning,
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(18.dp)
-                        ) {
-                            Text(if (scanState.isScanning) "正在扫描设备..." else "扫描局域网设备")
-                        }
-                        if (scanState.isScanning) {
-                            LinearProgressIndicator(
-                                modifier = Modifier.fillMaxWidth(),
-                                trackColor = MaterialTheme.colorScheme.surfaceVariant
-                            )
-                        }
-                        scanState.statusMessage?.let { message ->
-                            Text(
-                                text = message,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        scanState.errorMessage?.let { message ->
-                            Text(
-                                text = message,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.error
-                            )
-                        }
-                        scanState.devices.forEach { device ->
-                            ScanResultCard(
-                                device = device,
-                                selected = isSelectedDevice(
-                                    currentHost = ipAddress,
-                                    currentPort = port.toIntOrNull(),
-                                    deviceProfile = deviceProfile,
-                                    device = device
-                                ),
-                                onSelect = {
-                                    val resolvedSettings = device.toVideoStreamSettings(settings ?: VideoStreamSettings())
-                                    ipAddress = resolvedSettings.ipAddress
-                                    port = resolvedSettings.port.toString()
-                                    deviceProfile = resolvedSettings.deviceProfile
-                                    if (device.kind == DiscoveredStreamDeviceKind.MjpegOnly) {
-                                        ledControlEnabled = false
-                                        ledAutoLightEnabled = false
-                                    }
-                                }
-                            )
-                        }
                     }
+                    FilledTonalButton(
+                        onClick = onScanDevices,
+                        enabled = !scanState.isScanning,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(18.dp)
+                    ) {
+                        Text(if (scanState.isScanning) "正在扫描设备..." else "扫描局域网设备")
+                    }
+                    if (scanState.isScanning) {
+                        LinearProgressIndicator(
+                            modifier = Modifier.fillMaxWidth(),
+                            trackColor = MaterialTheme.colorScheme.surfaceVariant
+                        )
+                    }
+                    scanState.statusMessage?.let { message ->
+                        Text(
+                            text = message,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    scanState.errorMessage?.let { message ->
+                        Text(
+                            text = message,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                    scanState.devices.forEach { device ->
+                        ScanResultCard(
+                            device = device,
+                            selected = isSelectedDevice(
+                                currentHost = ipAddress,
+                                currentPort = port.toIntOrNull(),
+                                deviceProfile = deviceProfile,
+                                device = device
+                            ),
+                            onSelect = {
+                                val resolvedSettings = device.toVideoStreamSettings(settings ?: VideoStreamSettings())
+                                ipAddress = resolvedSettings.ipAddress
+                                port = resolvedSettings.port.toString()
+                                deviceId = resolvedSettings.deviceId
+                                mdnsUrl = resolvedSettings.mdnsUrl
+                                deviceProfile = resolvedSettings.deviceProfile
+                                if (device.kind == DiscoveredStreamDeviceKind.MjpegOnly) {
+                                    ledControlEnabled = false
+                                    ledAutoLightEnabled = false
+                                }
+                            }
+                        )
+                    }
+                    if (!supportsDeviceControl) {
+                        Text(
+                            text = "通用 MJPEG 模式下，扫描结果只会用于视频流接入，不会启用设备控制。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Text(
+                        text = stringResource(R.string.settings_stream_resolution),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        ProfileChip(
+                            title = "VGA",
+                            selected = resolution == VideoStreamSettings.FALLBACK_RESOLUTION,
+                            modifier = Modifier.weight(1f),
+                            onClick = { resolution = VideoStreamSettings.FALLBACK_RESOLUTION }
+                        )
+                        ProfileChip(
+                            title = "HD",
+                            selected = resolution == VideoStreamSettings.HD_RESOLUTION,
+                            modifier = Modifier.weight(1f),
+                            onClick = { resolution = VideoStreamSettings.HD_RESOLUTION }
+                        )
+                    }
+                    Text(
+                        text = stringResource(R.string.settings_stream_resolution_hint),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                     OutlinedTextField(
-                        value = quality,
+                        value = qualityInput,
                         onValueChange = {
-                            val filtered = it.filter(Char::isDigit)
-                            quality = (filtered.toIntOrNull() ?: 10).coerceIn(4, 63).toString()
+                            val filtered = it.filter(Char::isDigit).take(2)
+                            val numeric = filtered.toIntOrNull()
+                            qualityInput = when {
+                                filtered.isEmpty() -> ""
+                                numeric == null -> qualityInput
+                                numeric > 63 -> "63"
+                                else -> filtered
+                            }
                         },
                         label = { Text(stringResource(R.string.settings_jpeg_quality)) },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
                         enabled = supportsDeviceControl,
+                        supportingText = {
+                            Text(stringResource(R.string.settings_jpeg_quality_hint))
+                        },
                         colors = textFieldColors
                     )
                 }
@@ -514,8 +567,10 @@ fun VideoStreamSettingsDialog(
                             id = 1,
                             ipAddress = ipAddress.trim(),
                             port = port.toIntOrNull() ?: VideoStreamSettings.DEFAULT_PORT,
-                            resolution = settings?.resolution ?: VideoStreamSettings.DEFAULT_RESOLUTION,
-                            quality = quality.toIntOrNull() ?: 10,
+                            deviceId = deviceId,
+                            mdnsUrl = mdnsUrl,
+                            resolution = resolution,
+                            quality = (qualityInput.toIntOrNull() ?: 10).coerceIn(4, 63),
                             brightness = settings?.brightness ?: 0,
                             contrast = settings?.contrast ?: 0,
                             enabled = settings?.enabled ?: false,

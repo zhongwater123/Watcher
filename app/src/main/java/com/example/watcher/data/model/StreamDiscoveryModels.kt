@@ -28,6 +28,8 @@ data class DiscoveredStreamDevice(
         return existing.copy(
             ipAddress = host,
             port = preferredPort,
+            deviceId = deviceId,
+            mdnsUrl = mdnsUrl,
             deviceProfile = profile
         )
     }

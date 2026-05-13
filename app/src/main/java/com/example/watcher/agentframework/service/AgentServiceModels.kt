@@ -5,6 +5,7 @@ import com.example.watcher.agentframework.autonomy.AutonomousAgentEvent
 import com.example.watcher.agentframework.autonomy.AutonomousAgentSnapshot
 import com.example.watcher.agentframework.autonomy.AutonomousLifecycleState
 import com.example.watcher.agentframework.autonomy.AutonomousStopReason
+import com.example.watcher.agentframework.autonomy.CorrectionRecord
 import com.example.watcher.agentframework.autonomy.SignalChannel
 import com.example.watcher.agentframework.core.AgentDefinition
 import com.example.watcher.agentframework.core.AgentMemoryScope
@@ -73,10 +74,12 @@ enum class AgentInvocationStatus {
     Completed,
     Stopped,
     Failed,
+    Interrupted,
     Cancelled
 }
 
 data class AgentInvocationRecord(
+    // Autonomous invocation contract: invocationId == runtimeId == sessionId.
     val invocationId: String,
     val agentId: String,
     val sessionId: String? = null,
@@ -100,10 +103,13 @@ data class AutonomousAgentStartRequest(
     val agentId: String,
     val initialSignals: List<AgentSignalSeed> = emptyList(),
     val preloadMemory: List<AgentMemorySeed> = emptyList(),
-    val preloadKnowledge: List<AgentKnowledgeSeed> = emptyList()
+    val preloadKnowledge: List<AgentKnowledgeSeed> = emptyList(),
+    // null keeps legacy behavior with all registered tools visible; non-null is a runtime whitelist.
+    val allowedToolNames: Set<String>? = null
 )
 
 data class AutonomousAgentRuntimeRecord(
+    // Autonomous invocation contract: runtimeId == sessionId == invocationId.
     val runtimeId: String,
     val agentId: String,
     val lifecycleState: AutonomousLifecycleState = AutonomousLifecycleState.Created,
@@ -112,6 +118,7 @@ data class AutonomousAgentRuntimeRecord(
     val outputs: List<String> = emptyList(),
     val snapshot: AutonomousAgentSnapshot? = null,
     val events: List<AutonomousAgentEvent> = emptyList(),
+    val correctionRecords: List<CorrectionRecord> = emptyList(),
     val errorMessage: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis()

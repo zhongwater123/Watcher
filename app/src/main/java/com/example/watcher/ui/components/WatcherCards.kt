@@ -24,10 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CameraAlt
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Sensors
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -150,6 +147,7 @@ internal fun CameraPreviewCard(
     onCaptureSnapshot: (Bitmap) -> Unit,
     onOpenSettings: () -> Unit,
     compact: Boolean,
+    showFooterText: Boolean = true,
     showAiBadge: Boolean = false
 ) {
     val extendedColors = LocalWatcherExtendedColors.current
@@ -182,11 +180,13 @@ internal fun CameraPreviewCard(
         ) {
             PreviewImage(streamState = streamState)
             PreviewHeader(streamState = streamState, showAiBadge = showAiBadge)
-            PreviewFooter(
-                title = title,
-                subtitle = subtitle,
-                streamState = streamState
-            )
+            if (showFooterText) {
+                PreviewFooter(
+                    title = title,
+                    subtitle = subtitle,
+                    streamState = streamState
+                )
+            }
             PreviewActions(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
@@ -290,15 +290,6 @@ private fun BoxScope.PreviewActions(
         verticalAlignment = Alignment.CenterVertically
     ) {
         FilledTonalButton(
-            onClick = onOpenSettings,
-            shape = RoundedCornerShape(18.dp),
-            colors = previewActionColors()
-        ) {
-            Icon(Icons.Default.Settings, contentDescription = null)
-            Spacer(modifier = Modifier.width(6.dp))
-            Text("Settings")
-        }
-        FilledTonalButton(
             onClick = { currentFrame?.let(onCaptureSnapshot) },
             enabled = currentFrame != null,
             shape = RoundedCornerShape(18.dp),
@@ -307,27 +298,6 @@ private fun BoxScope.PreviewActions(
             Icon(Icons.Default.CameraAlt, contentDescription = null)
             Spacer(modifier = Modifier.width(6.dp))
             Text("Snapshot")
-        }
-        Button(
-            onClick = {
-                if (showReconnect) {
-                    onReconnect()
-                } else {
-                    onPlayingChange(false)
-                }
-            },
-            shape = RoundedCornerShape(18.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = Color.White.copy(alpha = 0.18f),
-                contentColor = Color.White
-            )
-        ) {
-            Icon(
-                imageVector = if (showReconnect) Icons.Default.Refresh else Icons.Default.Stop,
-                contentDescription = null
-            )
-            Spacer(modifier = Modifier.width(6.dp))
-            Text(if (showReconnect) "Reconnect" else "Pause")
         }
     }
 }

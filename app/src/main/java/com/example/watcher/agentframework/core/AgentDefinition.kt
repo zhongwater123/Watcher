@@ -18,5 +18,8 @@ data class AgentRunConfig(
     val maxWaitMillis: Long = 5_000L,
     val defaultWaitMillis: Long = 300L,
     val maxHistoryItems: Int = 30,
-    val toolTimeoutMillis: Long = 30_000L
+    val toolTimeoutMillis: Long = 30_000L,
+    val enableReflectionCorrection: Boolean = true,
+    val maxCorrectionAttemptsPerStep: Int = 2,
+    val maxCorrectionAttemptsPerRun: Int = 8
 )

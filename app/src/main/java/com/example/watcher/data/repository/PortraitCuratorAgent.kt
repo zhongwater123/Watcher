@@ -42,6 +42,8 @@ class PortraitCuratorAgent(
         private const val MEMORY_PREVIEW_LIMIT = 5
     }
 
+    private val registeredToolNames = linkedSetOf<String>()
+
     private var registered = false
     private var runtimeId: String? = null
     private var lastKnownRuntimeId: String? = null
@@ -134,6 +136,7 @@ class PortraitCuratorAgent(
             AutonomousAgentStartRequest(
                 agentId = PORTRAIT_CURATOR_AGENT_ID,
                 preloadMemory = preloadMemory,
+                allowedToolNames = registeredToolNames.toSet(),
                 initialSignals = listOf(
                     AgentSignalSeed(
                         channel = SignalChannel.System,
@@ -417,10 +420,12 @@ class PortraitCuratorAgent(
     }
 
     private suspend fun registerTools() {
+        registeredToolNames.clear()
+
         // Write tools (core — these are what the agent should actually use)
-        service.registerTool(CuratorWriteMemoryTool(::recordActivity))
-        service.registerTool(CuratorWriteKnowledgeTool({ currentSceneLabel }, ::recordActivity))
-        service.registerTool(
+        registerTool(CuratorWriteMemoryTool(::recordActivity))
+        registerTool(CuratorWriteKnowledgeTool({ currentSceneLabel }, ::recordActivity))
+        registerTool(
             CreateBehaviorClaimTool(
                 behaviorModelDao,
                 currentSceneIdProvider = { currentSceneId },
@@ -428,7 +433,7 @@ class PortraitCuratorAgent(
                 recordActivity = ::recordActivity
             )
         )
-        service.registerTool(
+        registerTool(
             UpdateBehaviorClaimTool(
                 behaviorModelDao,
                 currentSceneIdProvider = { currentSceneId },
@@ -436,7 +441,7 @@ class PortraitCuratorAgent(
                 recordActivity = ::recordActivity
             )
         )
-        service.registerTool(
+        registerTool(
             MergeBehaviorClaimsTool(
                 behaviorModelDao,
                 currentSceneIdProvider = { currentSceneId },
@@ -444,7 +449,7 @@ class PortraitCuratorAgent(
                 recordActivity = ::recordActivity
             )
         )
-        service.registerTool(
+        registerTool(
             DeleteBehaviorClaimTool(
                 behaviorModelDao,
                 currentSceneIdProvider = { currentSceneId },
@@ -452,7 +457,7 @@ class PortraitCuratorAgent(
                 recordActivity = ::recordActivity
             )
         )
-        service.registerTool(
+        registerTool(
             ConsolidateBehaviorClaimsTool(
                 consolidator = behaviorClaimConsolidator,
                 currentSceneIdProvider = { currentSceneId },
@@ -461,7 +466,7 @@ class PortraitCuratorAgent(
                 recordActivity = ::recordActivity
             )
         )
-        service.registerTool(
+        registerTool(
             WriteInferenceTool(
                 behaviorModelDao,
                 currentSceneIdProvider = { currentSceneId },
@@ -469,7 +474,7 @@ class PortraitCuratorAgent(
             )
         )
         // Read tool (safety valve — only for targeted pre-update checks)
-        service.registerTool(
+        registerTool(
             ReadClaimsByDimensionTool(
                 behaviorModelDao,
                 currentSceneIdProvider = { currentSceneId },
@@ -479,14 +484,14 @@ class PortraitCuratorAgent(
             )
         )
         // Goal & observation tools
-        service.registerTool(
+        registerTool(
             ResolveObservationGoalTool(
                 behaviorModelDao,
                 currentSceneIdProvider = { currentSceneId },
                 recordActivity = ::recordActivity
             )
         )
-        service.registerTool(
+        registerTool(
             RequestObservationTool(
                 behaviorModelDao,
                 sceneMemoryManager,
@@ -494,6 +499,11 @@ class PortraitCuratorAgent(
                 recordActivity = ::recordActivity
             )
         )
+    }
+
+    private fun registerTool(tool: com.example.watcher.agentframework.tools.AgentTool) {
+        registeredToolNames += tool.definition.name
+        service.registerTool(tool)
     }
 
     private fun recordActivity(

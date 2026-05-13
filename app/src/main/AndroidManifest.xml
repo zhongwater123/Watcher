@@ -54,7 +54,7 @@
             android:exported="true"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize"
             android:label="@string/app_name"
-            android:theme="@style/Theme.Watcher">
+            android:theme="@style/Theme.Watcher.Starting">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
 

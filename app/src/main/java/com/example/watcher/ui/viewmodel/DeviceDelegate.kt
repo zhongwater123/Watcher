@@ -33,6 +33,15 @@ internal class DeviceDelegate(
     private val migrationPreferences: android.content.SharedPreferences,
     private val onReconnectStream: () -> Unit
 ) {
+    companion object {
+        private const val PROVISIONING_RESTART_GRACE_PERIOD_MS = 2_500L
+        private const val PROVISIONING_REDISCOVERY_TIMEOUT_MS = 90_000L
+        private const val PROVISIONING_REDISCOVERY_RETRY_MS = 3_000L
+        private const val KEY_CHANGE_DETECTION_DEFAULTS_MIGRATED = "change_detection_defaults_v1"
+        private const val KEY_RESOLUTION_DEFAULTS_MIGRATED = "resolution_defaults_v1"
+        private const val RUNTIME_REDISCOVERY_COOLDOWN_MS = 30_000L
+    }
+
     private val _streamScanUiState = MutableStateFlow(StreamScanUiState())
     private val _deviceProvisionUiState = MutableStateFlow(DeviceProvisionUiState())
     private val _settingsNotice = MutableStateFlow<String?>(null)
@@ -43,6 +52,8 @@ internal class DeviceDelegate(
 
     private var streamScanJob: Job? = null
     private var deviceProvisionJob: Job? = null
+    private var runtimeRediscoveryJob: Job? = null
+    private var lastRuntimeRediscoveryAttemptAt: Long = 0L
 
     fun consumeSettingsNotice() { _settingsNotice.value = null }
 
@@ -133,6 +144,57 @@ internal class DeviceDelegate(
         _streamScanUiState.value = StreamScanUiState()
     }
 
+    fun recoverProvisionedDeviceAfterRuntimeDisconnect() {
+        if (runtimeRediscoveryJob?.isActive == true || isDeviceProvisionFlowBusy()) {
+            return
+        }
+        val now = System.currentTimeMillis()
+        if (now - lastRuntimeRediscoveryAttemptAt < RUNTIME_REDISCOVERY_COOLDOWN_MS) {
+            return
+        }
+        runtimeRediscoveryJob = scope.launch {
+            lastRuntimeRediscoveryAttemptAt = System.currentTimeMillis()
+            val currentSettings = settingsDao.getSettingsSync()?.normalized() ?: return@launch
+            if (
+                currentSettings.deviceProfile != VideoStreamSettings.DEVICE_PROFILE_ESP32 ||
+                !currentSettings.supportsDeviceControl
+            ) {
+                return@launch
+            }
+            if (currentSettings.deviceId.isBlank() && currentSettings.mdnsUrl.isBlank()) {
+                _settingsNotice.value =
+                    "The saved camera has no device identity yet. Open device settings and scan once before automatic recovery can work."
+                return@launch
+            }
+            _settingsNotice.value = "Detected a network change. Looking for the camera's new LAN address..."
+            val rediscovery = runCatching {
+                lanStreamScanner.rediscoverProvisionedDevice(
+                    settings = currentSettings,
+                    expectedDeviceId = currentSettings.deviceId.ifBlank { null },
+                    knownMdnsUrl = currentSettings.mdnsUrl.ifBlank { null }
+                )
+            }.getOrElse { error ->
+                _settingsNotice.value = error.message ?: "Failed to search for the camera on the current network."
+                return@launch
+            }
+            val discoveredDevice = rediscovery.discoveredDevice
+            if (discoveredDevice == null) {
+                _settingsNotice.value = buildRuntimeRediscoveryFailureMessage(rediscovery.mode)
+                return@launch
+            }
+            val updatedSettings = currentSettings.copy(
+                ipAddress = discoveredDevice.host,
+                port = discoveredDevice.preferredPort,
+                deviceId = discoveredDevice.deviceId.ifBlank { currentSettings.deviceId },
+                mdnsUrl = discoveredDevice.mdnsUrl.ifBlank { currentSettings.mdnsUrl }
+            ).normalized()
+            settingsDao.insert(updatedSettings)
+            _settingsNotice.value =
+                "Camera found at ${updatedSettings.ipAddress}. Reconnecting automatically."
+            onReconnectStream()
+        }
+    }
+
     // ── Device provisioning ──────────────────────────────────────
 
     fun refreshDeviceProvisionInfo() {
@@ -143,6 +205,8 @@ internal class DeviceDelegate(
             val currentSettings = settingsDao.getSettingsSync() ?: VideoStreamSettings()
             val updatedSettings = currentSettings.copy(
                 ipAddress = info.ip.ifBlank { currentSettings.ipAddress },
+                deviceId = info.deviceId.ifBlank { currentSettings.deviceId },
+                mdnsUrl = info.mdnsUrl.ifBlank { currentSettings.mdnsUrl },
                 preferredWifiSsid = info.staSsid.ifBlank { currentSettings.preferredWifiSsid }
             ).normalized()
             settingsDao.insert(updatedSettings)
@@ -204,6 +268,7 @@ internal class DeviceDelegate(
     fun release() {
         streamScanJob?.cancel()
         deviceProvisionJob?.cancel()
+        runtimeRediscoveryJob?.cancel()
     }
 
     // ── Private helpers ──────────────────────────────────────────
@@ -306,8 +371,12 @@ internal class DeviceDelegate(
     private suspend fun persistProvisionedDevice(device: DiscoveredStreamDevice, targetWifiSsid: String): VideoStreamSettings {
         val currentSettings = settingsDao.getSettingsSync() ?: VideoStreamSettings()
         val updatedSettings = currentSettings.copy(
-            ipAddress = device.host, port = device.preferredPort,
-            deviceProfile = VideoStreamSettings.DEVICE_PROFILE_ESP32, preferredWifiSsid = targetWifiSsid
+            ipAddress = device.host,
+            port = device.preferredPort,
+            deviceId = device.deviceId.ifBlank { currentSettings.deviceId },
+            mdnsUrl = device.mdnsUrl.ifBlank { currentSettings.mdnsUrl },
+            deviceProfile = VideoStreamSettings.DEVICE_PROFILE_ESP32,
+            preferredWifiSsid = targetWifiSsid
         ).normalized()
         settingsDao.insert(updatedSettings)
         return updatedSettings
@@ -332,19 +401,12 @@ internal class DeviceDelegate(
     private suspend fun migrateResolutionDefaultsIfNeeded(currentSettings: VideoStreamSettings) {
         if (migrationPreferences.getBoolean(KEY_RESOLUTION_DEFAULTS_MIGRATED, false)) return
         val normalized = currentSettings.normalized()
-        if (normalized.resolution == VideoStreamSettings.FALLBACK_RESOLUTION) {
-            settingsDao.insert(normalized.copy(resolution = VideoStreamSettings.DEFAULT_RESOLUTION))
+        if (normalized != currentSettings) {
+            settingsDao.insert(normalized)
         }
         migrationPreferences.edit().putBoolean(KEY_RESOLUTION_DEFAULTS_MIGRATED, true).apply()
     }
 
-    companion object {
-        private const val PROVISIONING_RESTART_GRACE_PERIOD_MS = 2_500L
-        private const val PROVISIONING_REDISCOVERY_TIMEOUT_MS = 90_000L
-        private const val PROVISIONING_REDISCOVERY_RETRY_MS = 3_000L
-        private const val KEY_CHANGE_DETECTION_DEFAULTS_MIGRATED = "change_detection_defaults_v1"
-        private const val KEY_RESOLUTION_DEFAULTS_MIGRATED = "resolution_defaults_v1"
-    }
 }
 
 private data class ProvisionReconnectOutcome(
@@ -387,6 +449,15 @@ private fun buildProvisionRediscoveryTimeoutMessage(mode: ProvisionRediscoveryMo
         "Wi-Fi was sent to the device, but its new IP was not found yet. Reconnect the phone to the target LAN and try reading device status again."
 }
 
+private fun buildRuntimeRediscoveryFailureMessage(mode: ProvisionRediscoveryMode): String = when (mode) {
+    ProvisionRediscoveryMode.NoCandidateLan ->
+        "The camera address may have changed, but no reachable hotspot or LAN subnet is available yet."
+    ProvisionRediscoveryMode.SearchingHotspotSubnet ->
+        "The camera address changed with the hotspot, but it was not found on the hotspot subnet yet."
+    else ->
+        "The camera address may have changed, but it was not found on the current LAN yet. You can rescan devices manually."
+}
+
 private fun DeviceRuntimeInfo.isProvisioningFailureFallback(): Boolean =
     isApMode && wifiFallbackToAp && hasWifiConnectFailure
 
@@ -397,7 +468,8 @@ private fun DeviceRuntimeInfo.toDiscoveredDevice(settings: VideoStreamSettings):
         streamPort = streamPort.takeIf { it in 1..65535 } ?: VideoStreamSettings.DEFAULT_STREAM_PORT,
         statusPort = httpPort.takeIf { it in 1..65535 } ?: settings.port,
         kind = DiscoveredStreamDeviceKind.Esp32Camera,
-        deviceId = deviceId, mdnsUrl = mdnsUrl
+        deviceId = deviceId.ifBlank { settings.deviceId },
+        mdnsUrl = mdnsUrl.ifBlank { settings.mdnsUrl }
     )
 
 private fun DiscoveredStreamDevice.toBaseUrl(): String =

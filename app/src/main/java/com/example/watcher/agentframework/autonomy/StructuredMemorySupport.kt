@@ -138,6 +138,31 @@ open class DefaultStructuredMemoryManager(
         append(sessionId, listOf(lesson.copy(scope = StructuredMemoryScope.LongTerm)))
     }
 
+    override suspend fun onCorrection(sessionId: String, record: CorrectionRecord) {
+        mutex.withLock {
+            val current = store.read(sessionId)
+            val correctionEntry = StructuredMemoryEntry(
+                scope = StructuredMemoryScope.Working,
+                content = "Correction ${record.action}: ${record.reason}",
+                metadata = mapOf(
+                    "kind" to "correction",
+                    "trigger" to record.trigger.name,
+                    "signature" to record.failureSignature
+                )
+            )
+            val nonCorrection = current.filterNot {
+                it.scope == StructuredMemoryScope.Working && it.metadata["kind"] == "correction"
+            }
+            val recentCorrection = current.filter {
+                it.scope == StructuredMemoryScope.Working && it.metadata["kind"] == "correction"
+            }.takeLast(2)
+            store.write(
+                sessionId,
+                (nonCorrection + recentCorrection + correctionEntry).takeLast(maxEntriesPerSession)
+            )
+        }
+    }
+
     override suspend fun clear(sessionId: String) {
         mutex.withLock {
             store.clear(sessionId)

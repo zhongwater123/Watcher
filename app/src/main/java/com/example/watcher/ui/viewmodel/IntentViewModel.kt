@@ -35,6 +35,7 @@ import com.example.watcher.data.repository.AppUpdatePrompt
 import com.example.watcher.data.repository.AppUpdateRepository
 import com.example.watcher.data.repository.CouncilExpertRepository
 import com.example.watcher.data.repository.HistoryRepository
+import com.example.watcher.data.repository.HistoryTemplateConverter
 import com.example.watcher.data.repository.IntentRepository
 import com.example.watcher.data.repository.LanStreamScanner
 import com.example.watcher.data.repository.MonitorManager
@@ -72,8 +73,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.flow.flatMapLatest
-import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 
 class IntentViewModel(application: Application) : AndroidViewModel(application) {
@@ -218,10 +217,16 @@ class IntentViewModel(application: Application) : AndroidViewModel(application) 
         videoRepository = videoRepository,
         latestFrameProvider = { monitorManager.currentFrame.value }
     )
+    private val historyTemplateConverter = HistoryTemplateConverter(
+        monitorTaskDao = database.monitorTaskDao(),
+        videoProcessTaskDao = database.videoProcessTaskDao(),
+        templateDao = database.templateDao()
+    )
     private val historyDelegate = HistoryDelegate(
         scope = viewModelScope,
         historyRepository = historyRepository,
         videoRepository = videoRepository,
+        historyTemplateConverter = historyTemplateConverter,
         selectedVideoRunId = videoWorkflow.selectedVideoRunIdState,
         selectedVideoRunEvents = videoWorkflow.selectedVideoRunEventsState
     )
@@ -369,6 +374,10 @@ class IntentViewModel(application: Application) : AndroidViewModel(application) 
     // ── History delegation ──────────────────────────────────────
     fun selectHistoryRecord(selection: HistoryRecordSelection?) = historyDelegate.selectHistoryRecord(selection)
     fun deleteHistoryRecord(selection: HistoryRecordSelection) = historyDelegate.deleteHistoryRecord(selection)
+    fun saveHistoryAsTemplate(detail: HistoryRecordDetail, onResult: (Boolean, String) -> Unit) =
+        historyDelegate.saveAsTemplate(detail, onResult)
+    fun shareHistoryAsTemplate(detail: HistoryRecordDetail, onResult: (String?) -> Unit) =
+        historyDelegate.shareAsTemplate(detail, onResult)
 
     // ── Device delegation ───────────────────────────────────────
     fun saveVideoStreamSettings(settings: VideoStreamSettings) = deviceDelegate.saveVideoStreamSettings(settings)
@@ -379,6 +388,8 @@ class IntentViewModel(application: Application) : AndroidViewModel(application) 
     fun scanVideoStreamDevices() = deviceDelegate.scanVideoStreamDevices()
     fun clearStreamDeviceScan() = deviceDelegate.clearStreamDeviceScan()
     fun clearDeviceProvisionState() = deviceDelegate.clearDeviceProvisionState()
+    fun recoverProvisionedDeviceAfterRuntimeDisconnect() =
+        deviceDelegate.recoverProvisionedDeviceAfterRuntimeDisconnect()
     fun consumeSettingsNotice() = deviceDelegate.consumeSettingsNotice()
 
     fun saveSnapshot(bitmap: android.graphics.Bitmap): String? = monitorWorkflow.saveSnapshot(bitmap)
@@ -573,4 +584,3 @@ class IntentViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 }
-

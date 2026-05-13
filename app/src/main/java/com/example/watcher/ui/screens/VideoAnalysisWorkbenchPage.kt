@@ -8,9 +8,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyHorizontalGrid
-import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
@@ -43,12 +40,14 @@ import com.example.watcher.ui.components.CameraPreviewCard
 import com.example.watcher.ui.components.EmptyHint
 import com.example.watcher.ui.components.FormField
 import com.example.watcher.ui.components.HistoryTile
+import com.example.watcher.ui.components.InfiniteTemplateTicker
 import com.example.watcher.ui.components.MjpegStreamUiState
 import com.example.watcher.ui.components.MotionDepth
 import com.example.watcher.ui.components.MotionStageSection
 import com.example.watcher.ui.components.PageScaffold
 import com.example.watcher.ui.components.StepBlock
 import com.example.watcher.ui.components.StepProgressRow
+import com.example.watcher.ui.components.TemplateTickerItem
 import com.example.watcher.ui.components.WatcherCard
 import com.example.watcher.ui.components.WatcherTopBar
 import com.example.watcher.ui.components.formFieldColors
@@ -87,6 +86,10 @@ internal fun VideoAnalysisWorkbenchPage(
     onOpenSettings: () -> Unit,
     onOpenAgentConfig: () -> Unit,
     onOpenWalletConfig: () -> Unit,
+    isConciseMode: Boolean,
+    onConciseModeChange: (Boolean) -> Unit,
+    rotaryRotationDegrees: Float,
+    onRotaryRotationChange: (Float) -> Unit,
     currentPage: HubPage,
     pageOffset: Float
 ) {
@@ -139,6 +142,11 @@ internal fun VideoAnalysisWorkbenchPage(
                 subtitle = header.subtitle,
                 currentPage = currentPage,
                 pageOffset = pageOffset,
+                showConciseModeToggle = true,
+                isConciseMode = isConciseMode,
+                onConciseModeChange = onConciseModeChange,
+                rotaryRotationDegrees = rotaryRotationDegrees,
+                onRotaryRotationChange = onRotaryRotationChange,
                 onOpenSettings = onOpenSettings,
                 onOpenAgentConfig = onOpenAgentConfig,
                 onOpenWalletConfig = onOpenWalletConfig
@@ -252,27 +260,16 @@ private fun TemplateCard(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            LazyHorizontalGrid(
-                rows = GridCells.Fixed(2),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.height(88.dp)
-            ) {
-                items(templates, key = { it.templateId }) { template ->
-                    Surface(
-                        onClick = { onApplyTemplate(template.templateId) },
-                        shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.82f)
-                    ) {
-                        Text(
-                            text = template.label,
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
-                        )
-                    }
-                }
-            }
+            InfiniteTemplateTicker(
+                items = templates.map { template ->
+                    TemplateTickerItem(
+                        id = template.templateId,
+                        label = template.label
+                    )
+                },
+                onItemClick = onApplyTemplate,
+                modifier = Modifier.height(96.dp)
+            )
         }
     }
 }

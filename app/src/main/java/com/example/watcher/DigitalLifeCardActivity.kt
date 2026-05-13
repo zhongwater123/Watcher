@@ -19,6 +19,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
@@ -28,6 +29,7 @@ import com.example.watcher.ui.components.VideoStreamSettingsDialog
 import com.example.watcher.ui.components.rememberMjpegStreamState
 import com.example.watcher.ui.screens.DigitalLifeCardWorkspacePage
 import com.example.watcher.ui.theme.WatcherTheme
+import com.example.watcher.ui.util.DigitalLifeConciseModeStore
 import com.example.watcher.ui.viewmodel.BlackboardDebugUiState
 import com.example.watcher.ui.viewmodel.ClaimConsolidationUiState
 import com.example.watcher.ui.viewmodel.DigitalLifeCardViewModel
@@ -75,7 +77,10 @@ private fun DigitalLifeCardRoute(
     )
 ) {
     val context = LocalContext.current
+    val conciseModeStore = remember(context) { DigitalLifeConciseModeStore(context) }
     var showSettingsDialog by remember { mutableStateOf(false) }
+    var isConciseMode by remember { mutableStateOf(conciseModeStore.isConciseMode()) }
+    var rotaryRotationDegrees by rememberSaveable { mutableStateOf(0f) }
     val streamSettings by viewModel.videoStreamSettings.collectAsStateWithLifecycle(initialValue = null)
     val isStreamPlaying by viewModel.isStreamPlaying.collectAsStateWithLifecycle()
     val streamReconnectToken by viewModel.streamReconnectToken.collectAsStateWithLifecycle()
@@ -141,7 +146,13 @@ private fun DigitalLifeCardRoute(
         streamState = streamState,
         isStreamPlaying = isStreamPlaying,
         commentaryState = commentaryState,
-        onBack = onClose,
+        isConciseMode = isConciseMode,
+        rotaryRotationDegrees = rotaryRotationDegrees,
+        onConciseModeChange = {
+            isConciseMode = it
+            conciseModeStore.setConciseMode(it)
+        },
+        onRotaryRotationChange = { rotaryRotationDegrees = it },
         onPlayingChange = viewModel::setStreamPlaying,
         onReconnectStream = viewModel::reconnectStream,
         onCaptureSnapshot = { bitmap ->

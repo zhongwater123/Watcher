@@ -3,8 +3,13 @@ package com.example.watcher.agentframework.autonomy
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import java.io.File
+import java.io.IOException
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption.ATOMIC_MOVE
+import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -26,7 +31,7 @@ class FileBackedStructuredMemoryStore(
             if (!file.exists()) return@withLock emptyList()
             runCatching {
                 gson.fromJson<List<StructuredMemoryEntry>>(file.readText(), type)
-            }.onFailure { e -> onReadError?.invoke(file, e as Exception) }
+            }.onFailure { e -> onReadError?.invoke(file, e.asException()) }
                 .getOrNull().orEmpty()
         }
     }
@@ -62,16 +67,23 @@ class FileStructuredMemoryManager(
 
 private fun atomicWriteText(target: File, content: String) {
     val tmp = File(target.parentFile, "${target.name}.tmp")
-    tmp.writeText(content)
-    if (!tmp.renameTo(target)) {
-        target.delete()
-        if (!tmp.renameTo(target)) {
-            tmp.delete()
-            target.writeText(content)
+    try {
+        tmp.writeText(content)
+        try {
+            Files.move(tmp.toPath(), target.toPath(), ATOMIC_MOVE, REPLACE_EXISTING)
+        } catch (_: AtomicMoveNotSupportedException) {
+            Files.move(tmp.toPath(), target.toPath(), REPLACE_EXISTING)
         }
+    } catch (e: Exception) {
+        tmp.delete()
+        throw IOException("Failed to write structured memory file: ${target.absolutePath}", e)
     }
 }
 
 private fun safeId(value: String): String {
     return URLEncoder.encode(value, StandardCharsets.UTF_8.toString())
+}
+
+private fun Throwable.asException(): Exception {
+    return this as? Exception ?: RuntimeException(message, this)
 }

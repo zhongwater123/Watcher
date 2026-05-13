@@ -83,7 +83,10 @@
     <string name="settings_title">视频与监控设置</string>
     <string name="settings_camera_host">摄像头地址</string>
     <string name="settings_stream_port">视频流端口</string>
-    <string name="settings_jpeg_quality">JPEG 质量（4-63）</string>
+    <string name="settings_stream_resolution">视频分辨率</string>
+    <string name="settings_stream_resolution_hint">VGA 更稳，HD 更清晰但更容易掉帧。</string>
+    <string name="settings_jpeg_quality">JPEG 质量（4-63，数值越小越清晰）</string>
+    <string name="settings_jpeg_quality_hint">ESP32-CAM 中 quality 数值越小，画面越清晰、码率越高，也更容易卡顿；数值越大则更省带宽、更稳定。</string>
     <string name="settings_lighting_section">补光</string>
     <string name="settings_led_control">启用 LED 控制</string>
     <string name="settings_auto_light">启用自动补光</string>

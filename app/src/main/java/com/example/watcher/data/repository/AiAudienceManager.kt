@@ -69,6 +69,7 @@ class AiAudienceManager(
     private val resetChannels = mutableMapOf<Long, Channel<String>>() // audienceId → trigger channel
     private val busyAudiences = mutableSetOf<Long>()
     private val providerMutexes = mutableMapOf<String, kotlinx.coroutines.sync.Mutex>() // providerId → mutex
+    private val audienceNames = mutableMapOf<Long, String>()
     private val emotionStates = mutableMapOf<Long, String>()
     private val hasEnteredChat = mutableSetOf<Long>()
     private val wallets = mutableMapOf<Long, Int>()
@@ -126,6 +127,10 @@ class AiAudienceManager(
     ) {
         val enabledIds = enabledAudiences.map { it.id }.toSet()
         val runningIds = heartbeatJobs.keys.toSet()
+        audienceNames.keys
+            .filter { it !in enabledIds }
+            .forEach(audienceNames::remove)
+        enabledAudiences.forEach { audienceNames[it.id] = it.name }
 
         // Stop removed / disabled audiences
         for (id in runningIds - enabledIds) {
@@ -168,6 +173,7 @@ class AiAudienceManager(
         lastLikeTime.clear()
         busyAudiences.clear()
         lastDanmaku.clear()
+        audienceNames.clear()
 
         _liveState.value = AiAudienceLiveState()
     }
@@ -300,9 +306,13 @@ class AiAudienceManager(
                 val waitMs = (baseIntervalMs + jitter).coerceAtLeast(3000L)
 
                 // Wait for either: heartbeat timeout OR reset signal (speech/mention trigger)
-                val triggerType = select<String> {
-                    resetCh.onReceive { it }
+                val triggerType = select<String?> {
+                    resetCh.onReceiveCatching { result -> result.getOrNull() }
                     onTimeout(waitMs) { "heartbeat" }
+                }
+                if (triggerType == null) {
+                    Log.d(TAG, "Heartbeat channel closed for '${audience.name}', stopping loop")
+                    break
                 }
 
                 // Enforce cooldown: skip if last tick was too recent
@@ -716,17 +726,14 @@ class AiAudienceManager(
     /** Get debug info for all active audiences */
     fun getAudienceDebugInfos(): List<AudienceDebugInfo> {
         return resetChannels.keys.mapNotNull { id ->
-            val name = emotionStates.keys.firstOrNull()?.let { null }
-            // We need the audience name; get it from lastDanmaku or lastPostContent
-            val audienceName = lastDanmaku[id]?.second?.let { null }
-            // Build from available data
+            val audienceName = audienceNames[id] ?: "audience-$id"
             val post = lastPostContent[id]
             AudienceDebugInfo(
                 audienceId = id,
-                audienceName = "", // filled by caller from DB
+                audienceName = audienceName,
                 emotion = emotionStates[id],
                 wallet = wallets[id] ?: INITIAL_BUDGET,
-                likeCount = 0, // filled by caller
+                likeCount = likeCounts[audienceName] ?: 0,
                 lastPostContent = post?.second,
                 lastPostTime = post?.first,
                 hasEntered = id in hasEnteredChat
