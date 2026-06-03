@@ -35,3 +35,4 @@ app.zip
 app (5).zip
 *.mp4
 watcher-video-*-debug-*.json
+watcher_wallet_config.json
