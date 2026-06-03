@@ -12,6 +12,12 @@ import kotlinx.coroutines.CancellationException
 import retrofit2.HttpException
 import java.io.File
 
+internal enum class SegmentAnalysisInputMode {
+    MergedSegmentVideo,    // Single merged mp4 with audio baked in
+    SeparateVideoAudio,    // Legacy: video + audio as two inputs
+    VideoOnly              // Fallback: audio failed or unavailable
+}
+
 data class VideoExecutionStatusUpdate(
     val stage: VideoRunStatus,
     val runId: Long,
@@ -39,7 +45,11 @@ data class VideoExecutionStatusUpdate(
     val nextCaptureInSeconds: Int? = null,
     val stopRequested: Boolean = false,
     val segmentFeedbacks: List<VideoSegmentFeedback> = emptyList(),
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val currentSegmentHasAudio: Boolean? = null,
+    val segmentAudioResults: List<Boolean>? = null,
+    val pipelinePhase: String? = null,
+    val videoRefinementInputMode: String? = null
 )
 
 data class VideoExecutionResult(
@@ -51,14 +61,39 @@ data class VideoExecutionResult(
 internal data class RecordedSegment(
     val segment: VideoSegmentRun,
     val file: File,
+    val mergedAnalysisFilePath: String? = null,
     val segmentNumber: Int,
     val durationSeconds: Int,
-    val startOffsetSeconds: Int
+    val startOffsetSeconds: Int,
+    val wallClockStartTime: Long,
+    val wallClockEndTime: Long,
+    val mediaStartMs: Long? = null,
+    val mediaEndMs: Long? = null,
+    val hasAudio: Boolean = false,
+    val audioEnhancementInfo: String = "",
+    val audioAssetPath: String? = null,
+    val audioDiagnosticsJson: String = "",
+    val interrupted: Boolean = false
+)
+
+internal data class MetadataRecordingResult(
+    val file: File?,
+    val durationMs: Long,
+    val hasAudio: Boolean = false,
+    val videoSource: String = ""
 )
 
 internal data class SegmentExecutionResult(
     val segment: VideoSegmentRun,
-    val analysisResult: VideoAnalysisResult
+    val analysisResult: VideoAnalysisResult,
+    val mergedAnalysisFilePath: String? = null,
+    val hasAudio: Boolean = false,
+    val audioEnhancementInfo: String = "",
+    val audioAssetPath: String? = null,
+    val audioDiagnosticsJson: String = "",
+    val analysisInputMode: SegmentAnalysisInputMode = SegmentAnalysisInputMode.SeparateVideoAudio,
+    val audioResolutionFailed: Boolean = false,
+    val coverageLimitation: String? = null
 )
 
 internal class VideoProcessException(

@@ -1,0 +1,3 @@
+[mcp_servers.watcher]
+args = ["./mcp/server.js"]
+command = "node"

@@ -2,9 +2,12 @@ package com.example.watcher.data.repository
 
 import android.graphics.Bitmap
 import com.example.watcher.data.local.TimelineEventDao
+import com.example.watcher.data.local.VideoAudioAssetDao
 import com.example.watcher.data.local.VideoProcessRunDao
 import com.example.watcher.data.local.VideoProcessTaskDao
+import com.example.watcher.data.local.VideoRemoteFileBindingDao
 import com.example.watcher.data.local.VideoSegmentRunDao
+import com.example.watcher.data.local.VideoSpeechTranscriptDao
 import com.example.watcher.data.model.VideoProcessRun
 import com.example.watcher.data.model.VideoProcessTask
 import com.example.watcher.data.model.VideoProcessTaskDraft
@@ -19,10 +22,14 @@ class VideoProcessRepository(
     private val taskDao: VideoProcessTaskDao,
     private val runDao: VideoProcessRunDao,
     private val segmentRunDao: VideoSegmentRunDao,
+    private val audioAssetDao: VideoAudioAssetDao,
+    private val remoteFileBindingDao: VideoRemoteFileBindingDao,
+    private val speechTranscriptDao: VideoSpeechTranscriptDao,
     private val timelineEventDao: TimelineEventDao,
     private val llmWalletRepository: LlmWalletRepository,
     private val recorder: MjpegVideoRecorder = MjpegVideoRecorder(),
     private val segmentMerger: VideoSegmentMerger = VideoSegmentMerger(),
+    private val audioAssetBuilder: VideoAudioAssetBuilder = VideoAudioAssetBuilder(),
     private val streamingClient: ArkStreamingClient = ArkStreamingClient()
 ) {
     private val planner = VideoTaskPlanner(
@@ -31,14 +38,64 @@ class VideoProcessRepository(
         apiKey = ArkConfig.apiKey
     )
 
+    private val remoteFileResolver = VideoRemoteFileResolver(
+        apiService = apiService,
+        bindingDao = remoteFileBindingDao,
+        apiKey = ArkConfig.apiKey
+    )
+
+    private val segmentAnalyzer = VideoSegmentAnalyzer(
+        apiService = apiService,
+        videoModel = ArkConfig.videoAnalysisModel,
+        apiKey = ArkConfig.apiKey
+    )
+
     private val segmentProcessor = VideoSegmentProcessor(
         apiService = apiService,
         segmentRunDao = segmentRunDao,
+        remoteFileResolver = remoteFileResolver,
+        segmentAnalyzer = segmentAnalyzer,
+        apiKey = ArkConfig.apiKey
+    )
+
+    private val segmentRecorder = VideoSegmentRecorder(
         recorder = recorder,
+        audioAssetBuilder = audioAssetBuilder,
+        remoteFileResolver = remoteFileResolver,
+        segmentRunDao = segmentRunDao,
+        audioAssetDao = audioAssetDao
+    )
+
+    private val mediaAssembler = VideoMediaAssembler(
         segmentMerger = segmentMerger,
-        streamingClient = streamingClient,
+        remoteFileResolver = remoteFileResolver
+    )
+
+    private val reportSummarizer = VideoReportSummarizer(
+        apiService = apiService,
         planningModel = ArkConfig.videoPlanningModel,
+        apiKey = ArkConfig.apiKey
+    )
+
+    private val chunkAnalyzer = VideoEvidenceChunkAnalyzer(
+        apiService = apiService,
         videoModel = ArkConfig.videoAnalysisModel,
+        apiKey = ArkConfig.apiKey
+    )
+
+    private val reportRefiner = VideoReportRefiner(
+        apiService = apiService,
+        videoModel = ArkConfig.videoAnalysisModel,
+        planningModel = ArkConfig.videoPlanningModel,
+        apiKey = ArkConfig.apiKey
+    )
+
+    private val audioOutlineProcessor = AudioOutlineProcessor(
+        apiService = apiService,
+        audioAssetDao = audioAssetDao,
+        remoteFileResolver = remoteFileResolver,
+        audioAssetBuilder = audioAssetBuilder,
+        audioModel = ArkConfig.videoAnalysisModel,
         apiKey = ArkConfig.apiKey
     )
 
@@ -47,7 +104,14 @@ class VideoProcessRepository(
         runDao = runDao,
         timelineEventDao = timelineEventDao,
         saveTask = ::saveTask,
-        segmentProcessor = segmentProcessor
+        segmentProcessor = segmentProcessor,
+        segmentRecorder = segmentRecorder,
+        mediaAssembler = mediaAssembler,
+        reportSummarizer = reportSummarizer,
+        chunkAnalyzer = chunkAnalyzer,
+        reportRefiner = reportRefiner,
+        audioOutlineProcessor = audioOutlineProcessor,
+        remoteFileResolver = remoteFileResolver
     )
 
     fun observeTasks(): Flow<List<VideoProcessTask>> = taskDao.observeTasks()
@@ -55,6 +119,8 @@ class VideoProcessRepository(
     fun observeRecentRuns(): Flow<List<VideoProcessRun>> = runDao.observeRecentRuns()
 
     fun observeTimelineForRun(runId: Long) = timelineEventDao.observeEventsForRun(runId)
+
+    fun observeSpeechForRun(runId: Long) = speechTranscriptDao.observeForRun(runId)
 
     suspend fun saveTask(draft: VideoProcessTaskDraft): VideoProcessTaskDraft {
         val normalized = draft.normalized()

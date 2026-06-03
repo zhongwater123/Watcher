@@ -19,6 +19,7 @@ import com.example.watcher.data.repository.IntentRepository
 import com.example.watcher.data.repository.MonitorManager
 import com.example.watcher.data.repository.SnapshotStore
 import com.example.watcher.ui.components.StreamSource
+import com.example.watcher.WatcherForegroundService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -229,6 +230,7 @@ internal class MonitorWorkflowController(
             _uiState.value = UiState.Error(message)
             return false
         }
+        WatcherForegroundService.start(appContext, "实时监控运行中")
         scope.launch {
             startMonitoringInternal(task)
         }
@@ -245,6 +247,7 @@ internal class MonitorWorkflowController(
 
     fun stopMonitoring() {
         monitorManager.stopMonitoring()
+        WatcherForegroundService.stop(appContext)
     }
 
     fun saveSnapshot(bitmap: Bitmap): String? {
@@ -282,6 +285,7 @@ internal class MonitorWorkflowController(
     private fun stopMonitoringIfRunning() {
         if (monitorManager.monitorStatus.value.isRunning) {
             monitorManager.stopMonitoring()
+            WatcherForegroundService.stop(appContext)
         }
     }
 
@@ -312,12 +316,12 @@ internal class MonitorWorkflowController(
     }
 
     private fun monitoringStartBlockMessage(): String? {
+        val source = streamSourceProvider()
         return when {
-            streamSourceProvider() == StreamSource.FrontCameraFallback ->
-                "当前正在使用手机前置摄像头。已优先重连 ESP32 视频流，请等待嵌入式画面恢复后再启动实时监控。"
-            streamSourceProvider() != StreamSource.RemoteMjpeg ||
+            source.isCameraFallback && monitorManager.currentFrame.value != null -> null
+            source != StreamSource.RemoteMjpeg && !source.isCameraFallback ||
                 monitorManager.currentFrame.value == null ->
-                "当前未连接到 ESP32 视频流。已尝试重新连接，请等待嵌入式画面恢复后再启动实时监控。"
+                "当前未连接到视频流。已尝试重新连接，请等待画面恢复后再启动实时监控。"
             else -> null
         }
     }

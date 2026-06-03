@@ -1,127 +1,36 @@
 package com.example.watcher.data.repository
 
-import android.graphics.Bitmap
 import com.example.watcher.data.local.VideoSegmentRunDao
 import com.example.watcher.data.model.VideoAnalysisResult
 import com.example.watcher.data.model.VideoProcessTaskDraft
+import com.example.watcher.data.model.VideoRemoteAssetKind
 import com.example.watcher.data.model.VideoRunStatus
-import com.example.watcher.data.model.VideoSegmentFeedback
 import com.example.watcher.data.model.VideoSegmentRun
-import com.example.watcher.data.model.VideoTimelineEvent
-import com.example.watcher.data.remote.ArkResponseStreamEvent
-import com.example.watcher.data.remote.ArkStreamingClient
-import com.example.watcher.data.remote.ContentItem
 import com.example.watcher.data.remote.DoubaoApiService
-import com.example.watcher.data.remote.DoubaoRequest
-import com.example.watcher.data.remote.DoubaoVideoRequest
-import com.example.watcher.data.remote.Message
-import com.example.watcher.data.remote.VideoContentItem
-import com.example.watcher.data.remote.VideoMessage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.MultipartBody
-import okhttp3.RequestBody.Companion.asRequestBody
-import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.File
+import java.io.IOException
 import java.util.concurrent.atomic.AtomicInteger
 
+/**
+ * Coordinates the lifecycle of a single recorded segment:
+ * upload → wait for preprocessing → analyze via model → persist result.
+ *
+ * Delegates recording to [VideoSegmentRecorder], model calls to [VideoSegmentAnalyzer],
+ * media assembly to [VideoMediaAssembler], and summarization to [VideoReportSummarizer].
+ */
 internal class VideoSegmentProcessor(
     private val apiService: DoubaoApiService,
     private val segmentRunDao: VideoSegmentRunDao,
-    private val recorder: MjpegVideoRecorder,
-    private val segmentMerger: VideoSegmentMerger,
-    private val streamingClient: ArkStreamingClient,
-    private val planningModel: String,
-    private val videoModel: String,
+    private val remoteFileResolver: VideoRemoteFileResolver,
+    private val segmentAnalyzer: VideoSegmentAnalyzer,
     private val apiKey: String
 ) {
+
     fun requireApiKey() {
         check(apiKey.isNotBlank()) {
             "API_KEY is missing. Set it in local.properties first."
-        }
-    }
-
-    suspend fun recordSegmentClip(
-        runId: Long,
-        task: VideoProcessTaskDraft,
-        segmentNumber: Int,
-        segmentCount: Int,
-        actualDuration: Int,
-        outputRoot: File,
-        latestFrameProvider: () -> Bitmap?,
-        startOffsetSeconds: Int,
-        streamingOutputEnabled: Boolean,
-        recordedSegmentCount: AtomicInteger,
-        analyzedSegmentCount: AtomicInteger,
-        recordedDurationSeconds: AtomicInteger,
-        onStatus: suspend (VideoExecutionStatusUpdate) -> Unit
-    ): RecordedSegment {
-        var segment = VideoSegmentRun(
-            runId = runId,
-            segmentIndex = segmentNumber,
-            status = VideoRunStatus.Recording,
-            durationSeconds = actualDuration
-        )
-        val segmentId = segmentRunDao.upsert(segment)
-        segment = segment.copy(id = segmentId)
-
-        try {
-            onStatus(
-                VideoExecutionStatusUpdate(
-                    stage = VideoRunStatus.Recording,
-                    runId = runId,
-                    segmentIndex = segmentNumber,
-                    segmentCount = segmentCount,
-                    message = "Recording segment $segmentNumber/$segmentCount",
-                    templateLabel = task.templateLabel,
-                    segmentDurationSeconds = task.plannedSegmentDurationSeconds,
-                    captureIntervalSeconds = task.captureIntervalSeconds,
-                    streamingEnabled = streamingOutputEnabled,
-                    isRecordingActive = true,
-                    isAnalysisActive = recordedSegmentCount.get() > analyzedSegmentCount.get(),
-                    recordedSegmentCount = recordedSegmentCount.get(),
-                    analyzedSegmentCount = analyzedSegmentCount.get(),
-                    pendingSegmentCount = (recordedSegmentCount.get() - analyzedSegmentCount.get())
-                        .coerceAtLeast(0),
-                    recordedDurationSeconds = recordedDurationSeconds.get(),
-                    remainingDurationSeconds = (task.plannedDurationSeconds - startOffsetSeconds)
-                        .coerceAtLeast(0),
-                    recordingSegmentIndex = segmentNumber
-                )
-            )
-
-            val outputFile = File(outputRoot, "video_runs/run_${runId}_segment_${segmentNumber}.mp4")
-            val recording = recorder.recordSegment(
-                outputFile = outputFile,
-                durationSeconds = actualDuration,
-                samplingFps = task.plannedSamplingFps,
-                frameProvider = latestFrameProvider
-            )
-
-            segment = segment.copy(
-                localFilePath = recording.file.absolutePath,
-                updatedAt = System.currentTimeMillis()
-            )
-            segmentRunDao.upsert(segment)
-
-            return RecordedSegment(
-                segment = segment,
-                file = recording.file,
-                segmentNumber = segmentNumber,
-                durationSeconds = actualDuration,
-                startOffsetSeconds = startOffsetSeconds
-            )
-        } catch (cancelled: CancellationException) {
-            persistSegmentCancelled(segment)
-            throw cancelled
-        } catch (error: Exception) {
-            persistSegmentFailure(segment, error)
-            throw VideoProcessException(
-                stage = VideoRunStatus.Recording,
-                userMessage = "Failed to record the video segment: ${error.toUserMessage("Check the live stream state.")}",
-                cause = error
-            )
         }
     }
 
@@ -139,6 +48,7 @@ internal class VideoSegmentProcessor(
         var segment = recordedSegment.segment
 
         try {
+            // --- Upload phase ---
             onStatus(
                 VideoExecutionStatusUpdate(
                     stage = VideoRunStatus.Uploading,
@@ -169,8 +79,49 @@ internal class VideoSegmentProcessor(
             )
             segmentRunDao.upsert(segment)
 
-            val fileId = try {
-                uploadVideoFile(recordedSegment.file, task.plannedSamplingFps)
+            var isMergedSegmentVideo = recordedSegment.hasAudio &&
+                recordedSegment.file.name.endsWith("_merged.mp4")
+
+            // Fallback merge: if recording didn't produce a merged file but audio exists locally,
+            // attempt on-the-fly merge before upload so analysis uses a single audio+video input.
+            var analysisFile = recordedSegment.file
+            if (!isMergedSegmentVideo && recordedSegment.audioAssetPath != null) {
+                val audioFile = File(recordedSegment.audioAssetPath)
+                if (audioFile.exists() && audioFile.length() > 0L) {
+                    val mergedFile = File(
+                        recordedSegment.file.parentFile,
+                        recordedSegment.file.nameWithoutExtension + "_merged.mp4"
+                    )
+                    val merged = runCatching {
+                        AudioSegmentSlicer().mergeVideoAndAudio(recordedSegment.file, audioFile, mergedFile)
+                    }.getOrDefault(false)
+                    if (merged && mergedFile.exists() && mergedFile.length() > 0L) {
+                        remoteFileResolver.recordLocalFileBinding(
+                            file = mergedFile,
+                            runId = runId,
+                            segmentRunId = segment.id,
+                            assetKind = VideoRemoteAssetKind.MergedSegmentVideo,
+                            mediaType = "video/mp4"
+                        )
+                        analysisFile = mergedFile
+                        isMergedSegmentVideo = true
+                    }
+                }
+            }
+
+            val effectiveAssetKind = if (isMergedSegmentVideo)
+                VideoRemoteAssetKind.MergedSegmentVideo
+            else
+                VideoRemoteAssetKind.SegmentVideo
+
+            val remoteFile = try {
+                remoteFileResolver.resolveVideoFile(
+                    file = analysisFile,
+                    runId = runId,
+                    segmentRunId = segment.id,
+                    assetKind = effectiveAssetKind,
+                    samplingFps = task.plannedSamplingFps
+                )
             } catch (error: Exception) {
                 throw VideoProcessException(
                     stage = VideoRunStatus.Uploading,
@@ -181,9 +132,10 @@ internal class VideoSegmentProcessor(
                 )
             }
 
+            // --- Preprocessing phase ---
             segment = segment.copy(
                 status = VideoRunStatus.Preprocessing,
-                arkFileId = fileId,
+                arkFileId = remoteFile.fileId,
                 updatedAt = System.currentTimeMillis()
             )
             segmentRunDao.upsert(segment)
@@ -213,7 +165,7 @@ internal class VideoSegmentProcessor(
             )
 
             try {
-                waitForFileReady(fileId)
+                waitForFileReady(remoteFile.fileId)
             } catch (error: Exception) {
                 throw VideoProcessException(
                     stage = VideoRunStatus.Preprocessing,
@@ -224,6 +176,41 @@ internal class VideoSegmentProcessor(
                 )
             }
 
+            // --- Audio resolution ---
+            val remoteAudioFileId: String?
+            val audioResolutionFailed: Boolean
+            val analysisInputMode: SegmentAnalysisInputMode
+
+            if (isMergedSegmentVideo) {
+                remoteAudioFileId = null
+                audioResolutionFailed = false
+                analysisInputMode = SegmentAnalysisInputMode.MergedSegmentVideo
+            } else {
+                val audioResult = runCatching {
+                    recordedSegment.audioAssetPath
+                        ?.takeIf(String::isNotBlank)
+                        ?.let(::File)
+                        ?.takeIf { it.exists() && it.length() > 0L }
+                        ?.let { audioFile ->
+                            val remoteAudio = remoteFileResolver.resolveAudioFile(
+                                file = audioFile,
+                                runId = runId,
+                                segmentRunId = segment.id,
+                                assetKind = VideoRemoteAssetKind.SegmentAudio
+                            )
+                            waitForFileReady(remoteAudio.fileId)
+                            remoteAudio.fileId
+                        }
+                }
+                remoteAudioFileId = audioResult.getOrNull()
+                audioResolutionFailed = audioResult.isFailure
+                analysisInputMode = if (remoteAudioFileId != null)
+                    SegmentAnalysisInputMode.SeparateVideoAudio
+                else
+                    SegmentAnalysisInputMode.VideoOnly
+            }
+
+            // --- Analysis phase (delegated to VideoSegmentAnalyzer) ---
             onStatus(
                 VideoExecutionStatusUpdate(
                     stage = VideoRunStatus.Analyzing,
@@ -250,17 +237,13 @@ internal class VideoSegmentProcessor(
                 )
             )
             val analysisResult = try {
-                analyzeVideoSegment(
-                    fileId = fileId,
+                segmentAnalyzer.analyze(
+                    fileId = remoteFile.fileId,
+                    audioFileId = remoteAudioFileId,
+                    isMergedInput = isMergedSegmentVideo,
                     task = task,
                     segmentNumber = recordedSegment.segmentNumber,
-                    segmentCount = segmentCount,
-                    runId = runId,
-                    streamingOutputEnabled = streamingOutputEnabled,
-                    recordedSegmentCount = recordedSegmentCount.get(),
-                    analyzedSegmentCount = analyzedSegmentCount.get(),
-                    recordedDurationSeconds = recordedDurationSeconds.get(),
-                    onStatus = onStatus
+                    segmentCount = segmentCount
                 )
             } catch (error: Exception) {
                 throw VideoProcessException(
@@ -270,11 +253,13 @@ internal class VideoSegmentProcessor(
                 )
             }
 
+            // --- Persist result ---
             try {
                 segment = segment.copy(
                     status = VideoRunStatus.Completed,
                     summary = analysisResult.summary,
                     conclusion = analysisResult.conclusion,
+                    evidenceJson = analysisResult.evidenceJson,
                     errorMessage = null,
                     updatedAt = System.currentTimeMillis()
                 )
@@ -287,7 +272,24 @@ internal class VideoSegmentProcessor(
                 )
             }
 
-            return SegmentExecutionResult(segment, analysisResult)
+            return SegmentExecutionResult(
+                segment = segment,
+                analysisResult = analysisResult,
+                mergedAnalysisFilePath = if (isMergedSegmentVideo) analysisFile.absolutePath else null,
+                hasAudio = recordedSegment.hasAudio,
+                audioEnhancementInfo = recordedSegment.audioEnhancementInfo,
+                audioAssetPath = recordedSegment.audioAssetPath,
+                audioDiagnosticsJson = recordedSegment.audioDiagnosticsJson,
+                analysisInputMode = analysisInputMode,
+                audioResolutionFailed = audioResolutionFailed,
+                coverageLimitation = when {
+                    audioResolutionFailed -> "Audio preprocessing failed; video-only analysis."
+                    analysisInputMode == SegmentAnalysisInputMode.VideoOnly && recordedSegment.hasAudio ->
+                        "Audio available locally but could not be resolved remotely."
+                    analysisInputMode == SegmentAnalysisInputMode.VideoOnly -> "No audio track."
+                    else -> null
+                }
+            )
         } catch (cancelled: CancellationException) {
             persistSegmentCancelled(segment)
             throw cancelled
@@ -297,332 +299,92 @@ internal class VideoSegmentProcessor(
         }
     }
 
-    suspend fun summarizeSegments(
-        task: VideoProcessTaskDraft,
-        results: List<SegmentExecutionResult>,
-        runId: Long,
-        segmentCount: Int,
-        streamingOutputEnabled: Boolean,
-        recordedSegmentCount: Int,
-        analyzedSegmentCount: Int,
-        recordedDurationSeconds: Int,
-        segmentFeedbacks: List<VideoSegmentFeedback>,
-        onStatus: suspend (VideoExecutionStatusUpdate) -> Unit
-    ): VideoAnalysisResult {
-        val summaryPayload = buildString {
-            appendLine("你正在为一次分片视频分析任务生成最终汇总。")
-            appendLine("任务目标：${task.userRequirement}")
-            appendLine("场景参考：${task.sceneContext}")
-            appendLine("汇总提示词：${task.finalSummaryPrompt}")
-            appendLine("只返回 JSON，字段为 summary、conclusion、timelineEvents。")
-            appendLine("timelineEvents 中每一项必须包含 timestampSeconds、title、detail、confidence。")
-            appendLine("JSON 字段名保持英文，字段值与说明文字请使用简体中文。")
-            appendLine("confidence 优先返回 0 到 1 之间的数字；如果无法量化，也允许返回“高”“中”“低”。")
-            results.forEach { result ->
-                appendLine("第 ${result.segment.segmentIndex} 段摘要：${result.analysisResult.summary}")
-                appendLine("第 ${result.segment.segmentIndex} 段结论：${result.analysisResult.conclusion}")
-                result.analysisResult.timelineEvents.forEach { event ->
-                    appendLine(
-                        "事件 ${result.segment.segmentIndex}@${event.timestampSeconds}s: " +
-                            "${event.title} | ${event.detail}"
-                    )
-                }
-            }
-        }
-
-        val request = DoubaoRequest(
-            model = planningModel,
-            input = listOf(
-                Message(
-                    role = "user",
-                    content = listOf(
-                        ContentItem(
-                            type = "input_text",
-                            text = summaryPayload
-                        )
-                    )
-                )
-            )
+    suspend fun markRecordedSegmentAnalysisFailed(
+        recordedSegment: RecordedSegment,
+        error: Throwable
+    ): SegmentExecutionResult {
+        val message = error.toUserMessage("Segment analysis failed.")
+        val latestSegment = segmentRunDao.getById(recordedSegment.segment.id)
+            ?: recordedSegment.segment
+        val failedSegment = latestSegment.copy(
+            status = VideoRunStatus.Failed,
+            errorMessage = message,
+            updatedAt = System.currentTimeMillis()
         )
-
-        val rawText = if (streamingOutputEnabled) {
-            streamModelText(
-                requestPayload = request.copy(stream = true),
-                stage = VideoRunStatus.Summarizing,
-                runId = runId,
-                segmentIndex = segmentCount,
-                segmentCount = segmentCount,
-                loadingMessage = "Generating final summary",
-                templateLabel = task.templateLabel,
-                segmentDurationSeconds = task.plannedSegmentDurationSeconds,
-                captureIntervalSeconds = task.captureIntervalSeconds,
-                streamingEnabled = true,
-                isRecordingActive = false,
-                isAnalysisActive = true,
-                recordedSegmentCount = recordedSegmentCount,
-                analyzedSegmentCount = analyzedSegmentCount,
-                pendingSegmentCount = 0,
-                recordedDurationSeconds = recordedDurationSeconds,
-                activeStreamingSegmentIndex = segmentCount,
-                segmentFeedbacks = segmentFeedbacks,
-                onStatus = onStatus
-            )
-        } else {
-            val response = apiService.analyzeIntent(
-                authorization = bearerToken(),
-                request = request
-            )
-            response.requireOutputText("video summary")
-        }
-
-        return ModelOutputParser.parseVideoAnalysis(rawText)
-    }
-
-    suspend fun mergeSegmentVideos(
-        runId: Long,
-        task: VideoProcessTaskDraft,
-        results: List<SegmentExecutionResult>,
-        outputRoot: File
-    ): String {
-        val segmentFiles = results
-            .sortedBy { it.segment.segmentIndex }
-            .mapNotNull { result ->
-                result.segment.localFilePath
-                    ?.takeIf(String::isNotBlank)
-                    ?.let(::File)
-                    ?.takeIf(File::exists)
-            }
-        if (segmentFiles.isEmpty()) {
-            throw IllegalStateException("No local segment files are available for merging.")
-        }
-
-        val outputFile = File(outputRoot, "video_runs/run_${runId}_merged.mp4")
-        return segmentMerger.mergeSegments(
-            segmentFiles = segmentFiles,
-            outputFile = outputFile,
-            samplingFps = task.plannedSamplingFps
-        ).absolutePath
-    }
-
-    fun combineSegmentResults(
-        results: List<SegmentExecutionResult>,
-        timelineEvents: List<VideoTimelineEvent>
-    ): VideoAnalysisResult {
-        val summary = results.joinToString("\n") { result ->
-            "第 ${result.segment.segmentIndex} 段：${result.analysisResult.summary}"
-        }
-        val conclusion = results.joinToString("\n") { result ->
-            "第 ${result.segment.segmentIndex} 段结论：${result.analysisResult.conclusion}"
-        }
-        val rawResponse = results.joinToString("\n\n") { result ->
-            result.analysisResult.rawResponse
-        }
-        return VideoAnalysisResult(
-            summary = summary,
-            conclusion = conclusion,
-            timelineEvents = timelineEvents,
-            rawResponse = rawResponse
-        )
-    }
-
-    private suspend fun uploadVideoFile(file: File, samplingFps: Int): String {
-        val uploadSamplingFps = samplingFps.coerceIn(1, 5)
-        val response = apiService.uploadFile(
-            authorization = bearerToken(),
-            purpose = "user_data".toRequestBody("text/plain".toMediaType()),
-            preprocessConfigs = mapOf(
-                "preprocess_configs[video][fps]" to uploadSamplingFps
-                    .toString()
-                    .toRequestBody("text/plain".toMediaType())
+        segmentRunDao.upsert(failedSegment)
+        return SegmentExecutionResult(
+            segment = failedSegment,
+            analysisResult = VideoAnalysisResult(
+                summary = "",
+                conclusion = "",
+                timelineEvents = emptyList(),
+                rawResponse = message
             ),
-            file = MultipartBody.Part.createFormData(
-                name = "file",
-                filename = file.name,
-                body = file.asRequestBody("video/mp4".toMediaType())
-            )
+            hasAudio = recordedSegment.hasAudio,
+            audioEnhancementInfo = recordedSegment.audioEnhancementInfo,
+            audioAssetPath = recordedSegment.audioAssetPath,
+            audioDiagnosticsJson = recordedSegment.audioDiagnosticsJson
         )
-        return response.resolvedId()
-            ?: error("File upload succeeded but file_id was missing.")
     }
+
+    // region File polling
 
     private suspend fun waitForFileReady(fileId: String) {
         repeat(FILE_POLL_ATTEMPTS) { attempt ->
-            val file = apiService.getFile(bearerToken(), fileId)
+            val file = retryRemoteCall { apiService.getFile(bearerToken(), fileId) }
             val status = file.status?.lowercase()
-            if (
-                status == null ||
-                status == "active" ||
-                status == "processed" ||
-                status == "ready" ||
-                status == "succeeded"
-            ) {
-                return
-            }
-            if (status == "failed") {
-                error("Ark file preprocessing failed.")
-            }
-            delay(FILE_POLL_INTERVAL_MS)
-            if (attempt == FILE_POLL_ATTEMPTS - 1) {
-                error("Ark file preprocessing timed out.")
+            when {
+                status == "active" || status == "processed" || status == "ready" || status == "succeeded" -> {
+                    remoteFileResolver.recordRemoteFileStatus(fileId, status)
+                    return
+                }
+                status == "failed" -> {
+                    remoteFileResolver.recordRemoteFileStatus(fileId, status, "preprocessing failed")
+                    error("Ark file preprocessing failed for file $fileId.")
+                }
+                else -> {
+                    delay(FILE_POLL_INTERVAL_MS)
+                    if (attempt == FILE_POLL_ATTEMPTS - 1) {
+                        remoteFileResolver.recordRemoteFileStatus(
+                            fileId = fileId,
+                            status = status ?: "unknown",
+                            message = "preprocessing timed out"
+                        )
+                        error("Ark file preprocessing timed out (last status: $status) for file $fileId.")
+                    }
+                }
             }
         }
     }
 
-    private suspend fun analyzeVideoSegment(
-        fileId: String,
-        task: VideoProcessTaskDraft,
-        segmentNumber: Int,
-        segmentCount: Int,
-        runId: Long,
-        streamingOutputEnabled: Boolean,
-        recordedSegmentCount: Int,
-        analyzedSegmentCount: Int,
-        recordedDurationSeconds: Int,
-        onStatus: suspend (VideoExecutionStatusUpdate) -> Unit
-    ): VideoAnalysisResult {
-        val request = DoubaoVideoRequest(
-            model = videoModel,
-            input = listOf(
-                VideoMessage(
-                    role = "user",
-                    content = listOf(
-                        VideoContentItem(
-                            type = "input_video",
-                            fileId = fileId
-                        ),
-                        VideoContentItem(
-                            type = "input_text",
-                            text = buildSegmentAnalysisPrompt(
-                                task = task,
-                                segmentNumber = segmentNumber,
-                                segmentCount = segmentCount
-                            )
-                        )
-                    )
-                )
-            )
-        )
+    // endregion
 
-        val rawText = if (streamingOutputEnabled) {
-            streamModelText(
-                requestPayload = request.copy(stream = true),
-                stage = VideoRunStatus.Analyzing,
-                runId = runId,
-                segmentIndex = segmentNumber,
-                segmentCount = segmentCount,
-                loadingMessage = "Analyzing segment $segmentNumber/$segmentCount",
-                templateLabel = task.templateLabel,
-                segmentDurationSeconds = task.plannedSegmentDurationSeconds,
-                captureIntervalSeconds = task.captureIntervalSeconds,
-                streamingEnabled = true,
-                isRecordingActive = recordedSegmentCount < segmentCount,
-                isAnalysisActive = true,
-                recordedSegmentCount = recordedSegmentCount,
-                analyzedSegmentCount = analyzedSegmentCount,
-                pendingSegmentCount = (recordedSegmentCount - analyzedSegmentCount).coerceAtLeast(0),
-                recordedDurationSeconds = recordedDurationSeconds,
-                activeStreamingSegmentIndex = segmentNumber,
-                onStatus = onStatus
-            )
-        } else {
-            val response = apiService.analyzeVideo(
-                authorization = bearerToken(),
-                request = request
-            )
-            response.requireOutputText("video segment analysis")
-        }
+    // region Utilities
 
-        return ModelOutputParser.parseVideoAnalysis(rawText)
-    }
-
-    private suspend fun streamModelText(
-        requestPayload: Any,
-        stage: VideoRunStatus,
-        runId: Long,
-        segmentIndex: Int,
-        segmentCount: Int,
-        loadingMessage: String,
-        templateLabel: String?,
-        segmentDurationSeconds: Int,
-        captureIntervalSeconds: Int,
-        streamingEnabled: Boolean,
-        isRecordingActive: Boolean,
-        isAnalysisActive: Boolean,
-        recordedSegmentCount: Int,
-        analyzedSegmentCount: Int,
-        pendingSegmentCount: Int,
-        recordedDurationSeconds: Int,
-        activeStreamingSegmentIndex: Int,
-        segmentFeedbacks: List<VideoSegmentFeedback> = emptyList(),
-        onStatus: suspend (VideoExecutionStatusUpdate) -> Unit
-    ): String {
-        var streamedText = ""
-        val finalText = streamingClient.streamResponse(
-            authorization = bearerToken(),
-            requestPayload = requestPayload
-        ) { event ->
-            when (event) {
-                is ArkResponseStreamEvent.OutputTextDelta -> {
-                    streamedText = event.fullText
-                    onStatus(
-                        VideoExecutionStatusUpdate(
-                            stage = stage,
-                            runId = runId,
-                            segmentIndex = segmentIndex,
-                            segmentCount = segmentCount,
-                            message = loadingMessage,
-                            templateLabel = templateLabel,
-                            segmentDurationSeconds = segmentDurationSeconds,
-                            captureIntervalSeconds = captureIntervalSeconds,
-                            streamingBuffer = event.fullText,
-                            streamingEnabled = streamingEnabled,
-                            isStreamingActive = true,
-                            isRecordingActive = isRecordingActive,
-                            isAnalysisActive = isAnalysisActive,
-                            recordedSegmentCount = recordedSegmentCount,
-                            analyzedSegmentCount = analyzedSegmentCount,
-                            pendingSegmentCount = pendingSegmentCount,
-                            recordedDurationSeconds = recordedDurationSeconds,
-                            activeStreamingSegmentIndex = activeStreamingSegmentIndex,
-                            segmentFeedbacks = segmentFeedbacks
-                        )
-                    )
+    private suspend fun <T> retryRemoteCall(block: suspend () -> T): T {
+        var lastError: Throwable? = null
+        repeat(REMOTE_RETRY_ATTEMPTS) { attempt ->
+            try {
+                return block()
+            } catch (error: Throwable) {
+                if (error is CancellationException || !error.isRetryableRemoteFailure() || attempt == REMOTE_RETRY_ATTEMPTS - 1) {
+                    throw error
                 }
-
-                is ArkResponseStreamEvent.OutputTextDone -> {
-                    streamedText = event.fullText
-                    onStatus(
-                        VideoExecutionStatusUpdate(
-                            stage = stage,
-                            runId = runId,
-                            segmentIndex = segmentIndex,
-                            segmentCount = segmentCount,
-                            message = loadingMessage,
-                            templateLabel = templateLabel,
-                            segmentDurationSeconds = segmentDurationSeconds,
-                            captureIntervalSeconds = captureIntervalSeconds,
-                            streamingBuffer = event.fullText,
-                            streamingEnabled = streamingEnabled,
-                            isStreamingActive = false,
-                            isRecordingActive = isRecordingActive,
-                            isAnalysisActive = isAnalysisActive,
-                            recordedSegmentCount = recordedSegmentCount,
-                            analyzedSegmentCount = analyzedSegmentCount,
-                            pendingSegmentCount = pendingSegmentCount,
-                            recordedDurationSeconds = recordedDurationSeconds,
-                            activeStreamingSegmentIndex = activeStreamingSegmentIndex,
-                            segmentFeedbacks = segmentFeedbacks
-                        )
-                    )
-                }
-
-                is ArkResponseStreamEvent.Completed -> {
-                    streamedText = event.fullText
-                }
+                lastError = error
+                delay(REMOTE_RETRY_DELAY_MS * (attempt + 1))
             }
         }
-        return finalText.ifBlank { streamedText }
+        throw lastError ?: IllegalStateException("Remote call failed.")
     }
+
+    private fun Throwable.isRetryableRemoteFailure(): Boolean {
+        val text = message.orEmpty()
+        return this is IOException ||
+            text.contains("Unable to resolve host", ignoreCase = true) ||
+            text.contains("timeout", ignoreCase = true)
+    }
+
+    private fun bearerToken(): String = "Bearer $apiKey"
 
     private suspend fun persistSegmentFailure(segment: VideoSegmentRun, error: Throwable) {
         runCatching {
@@ -648,31 +410,12 @@ internal class VideoSegmentProcessor(
         }
     }
 
-    private fun bearerToken(): String = "Bearer $apiKey"
-
-    private fun buildSegmentAnalysisPrompt(
-        task: VideoProcessTaskDraft,
-        segmentNumber: Int,
-        segmentCount: Int
-    ): String {
-        return buildString {
-            appendLine("你是一名视频理解助手。")
-            appendLine("任务目标：${task.userRequirement}")
-            appendLine("场景参考：${task.sceneContext}")
-            appendLine("当前片段：${segmentNumber}/${segmentCount}")
-            appendLine("片段时长：${task.plannedSegmentDurationSeconds} 秒")
-            appendLine("采样间隔：${task.captureIntervalSeconds} 秒")
-            appendLine("片段分析提示词：${task.segmentAnalysisPrompt}")
-            appendLine("只返回 JSON，字段为 summary、conclusion、timelineEvents。")
-            appendLine("timelineEvents 中每一项必须包含 timestampSeconds、title、detail、confidence。")
-            appendLine("JSON 字段名保持英文，字段值与说明文字请使用简体中文。")
-            appendLine("confidence 优先返回 0 到 1 之间的数字；如果无法量化，也允许返回“高”“中”“低”。")
-            appendLine("timestampSeconds 必须仅使用当前片段内的相对秒数。")
-        }
-    }
+    // endregion
 
     private companion object {
-        private const val FILE_POLL_ATTEMPTS = 30
+        private const val FILE_POLL_ATTEMPTS = 150
         private const val FILE_POLL_INTERVAL_MS = 2_000L
+        private const val REMOTE_RETRY_ATTEMPTS = 3
+        private const val REMOTE_RETRY_DELAY_MS = 2_000L
     }
 }

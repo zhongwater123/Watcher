@@ -354,4 +354,181 @@ class ModelOutputParserTest {
         assertEquals("门口有人停留", result.timelineEvents.first().title)
         assertEquals(null, result.timelineEvents.first().confidence)
     }
+
+    @Test
+    fun `video analysis parsing accepts range timestamps without falling back to raw json`() {
+        val raw = """
+            {
+              "summary": "本段讲解客户细分概念。",
+              "conclusion": "完成了客户细分模块的基础铺垫。",
+              "timelineEvents": [
+                {
+                  "timestampSeconds": "11-25",
+                  "title": "展示客户细分概念PPT页",
+                  "detail": "PPT页面展示客户细分定义。",
+                  "confidence": 0.98
+                }
+              ],
+              "structuredNote": {
+                "overview": "围绕客户细分展开。",
+                "outline": ["客户细分概念", "五类市场分类"]
+              },
+              "markdownNote": "#客户细分讲座\n-核心主题：客户细分"
+            }
+        """.trimIndent()
+
+        val result = ModelOutputParser.parseVideoAnalysis(raw)
+
+        assertEquals("本段讲解客户细分概念。", result.summary)
+        assertEquals("完成了客户细分模块的基础铺垫。", result.conclusion)
+        assertEquals(1, result.timelineEvents.size)
+        assertEquals(11, result.timelineEvents.first().timestampSeconds)
+        assertEquals("#客户细分讲座\n-核心主题：客户细分", result.markdownNote)
+        assertTrue(result.structuredNoteJson.contains("客户细分概念"))
+        assertTrue(!result.evidenceJson.contains("\"summary\""))
+        assertTrue(!result.evidenceJson.contains("\"conclusion\""))
+    }
+
+    @Test
+    fun `video analysis parsing returns empty user fields for malformed json`() {
+        val raw = """{ "summary": "截断的模型输出","""
+
+        val result = ModelOutputParser.parseVideoAnalysis(raw)
+
+        assertEquals("", result.summary)
+        assertEquals("", result.conclusion)
+        assertEquals("", result.structuredNoteJson)
+        assertEquals("", result.markdownNote)
+        assertEquals(raw, result.rawResponse)
+    }
+    @Test
+    fun `video segment fact packet keeps facts in evidence without final report fields`() {
+        val raw = """
+            {
+              "segmentTopic": "Customer segmentation intro",
+              "audioFacts": [
+                {
+                  "timestampSeconds": 18,
+                  "text": "The speaker explains that customer segments describe groups served by a business.",
+                  "speakerHint": "lecturer",
+                  "confidence": 0.86,
+                  "uncertain": false
+                }
+              ],
+              "speechKeyPoints": ["Customer segments are a core business model block."],
+              "visualFacts": [
+                {
+                  "timestampSeconds": 22,
+                  "content": "Slide shows five market types.",
+                  "confidence": 0.9
+                }
+              ],
+              "screenOrBoardFacts": ["PPT lists mass, niche, segmented, diversified and multi-sided markets."],
+              "demonstrationFacts": [],
+              "timelineFacts": [
+                {
+                  "timestampSeconds": 22,
+                  "title": "Slide with market types",
+                  "detail": "The segment shows a classification slide.",
+                  "confidence": 0.9
+                }
+              ],
+              "uncertainties": [],
+              "quality": {
+                "audioPresent": true,
+                "speechClarity": "medium",
+                "visualClarity": "high",
+                "contentDensity": "high"
+              }
+            }
+        """.trimIndent()
+
+        val result = ModelOutputParser.parseVideoAnalysis(raw)
+
+        assertEquals("Customer segmentation intro", result.summary)
+        assertEquals("", result.conclusion)
+        assertEquals(1, result.timelineEvents.size)
+        assertEquals(22, result.timelineEvents.first().timestampSeconds)
+        assertTrue(result.evidenceJson.contains("\"schemaVersion\":\"video_segment_fact_packet_v1\""))
+        assertTrue(result.evidenceJson.contains("\"audioFacts\""))
+        assertTrue(!result.evidenceJson.contains("\"markdownNote\""))
+        assertTrue(!result.evidenceJson.contains("\"structuredNote\""))
+    }
+
+    @Test
+    fun `video final report packet becomes final user fields`() {
+        val raw = """
+            {
+              "reportType": "learning_notes",
+              "title": "Business model lecture",
+              "briefSummary": "The lecture explains customer segmentation in the business model canvas.",
+              "keyConclusions": [
+                "Customer segmentation is the foundation for choosing markets.",
+                "The speaker used education brands as examples."
+              ],
+              "structuredNotes": {
+                "overview": "A lecture about market segmentation and education industry cases.",
+                "sections": [
+                  {
+                    "title": "Market types",
+                    "items": ["Mass market", "Niche market", "Multi-sided market"]
+                  }
+                ]
+              },
+              "outline": ["Concept intro", "Five market types", "Education examples"],
+              "knowledgePoints": ["Business model canvas", "Customer segmentation"],
+              "reviewOrActionItems": ["Review the five market categories."],
+              "evidenceHighlights": ["PPT slide lists five market types."],
+              "coverageNotice": "The recording stopped early but contains enough lecture evidence.",
+              "timeline": [
+                {
+                  "timestampSeconds": 120,
+                  "title": "Education examples",
+                  "detail": "The speaker compares several education brands.",
+                  "confidence": 0.88
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val result = ModelOutputParser.parseVideoAnalysis(raw)
+
+        assertEquals("The lecture explains customer segmentation in the business model canvas.", result.summary)
+        assertTrue(result.conclusion.contains("Customer segmentation is the foundation"))
+        assertEquals(1, result.timelineEvents.size)
+        assertEquals(120, result.timelineEvents.first().timestampSeconds)
+        assertTrue(result.structuredNoteJson.contains("\"schemaVersion\":\"video_final_report_v1\""))
+        assertTrue(result.markdownNote.contains("# Business model lecture"))
+        assertTrue(result.markdownNote.contains("## Key Conclusions"))
+    }
+
+    @Test
+    fun `scene observation final report does not force knowledge or action sections`() {
+        val raw = """
+            {
+              "reportType": "scene_observation",
+              "title": "Workspace observation",
+              "briefSummary": "A short video records a person adjusting posture in a shared workspace.",
+              "keyConclusions": ["The activity is ordinary and no abnormal event is visible."],
+              "structuredNotes": {
+                "overview": "A general scene observation.",
+                "sections": []
+              },
+              "outline": ["01 场景概览", "02人物动作复盘"],
+              "knowledgePoints": ["本次记录未采集到清晰有效语音"],
+              "reviewOrActionItems": ["01", "02", "若需完整对话内容，可更换高灵敏度收音设备补充记录"],
+              "evidenceHighlights": ["The camera shows desks, ceiling pipes, and seated people."],
+              "coverageNotice": "Only light ambient noise is audible; no clear speech is captured.",
+              "timeline": []
+            }
+        """.trimIndent()
+
+        val result = ModelOutputParser.parseVideoAnalysis(raw)
+
+        assertTrue(result.markdownNote.contains("## Event Flow"))
+        assertTrue(!result.markdownNote.contains("## Knowledge Points"))
+        assertTrue(!result.markdownNote.contains("## Follow-ups"))
+        assertTrue(!result.markdownNote.contains("01"))
+        assertTrue(result.markdownNote.contains("人物动作复盘"))
+    }
 }

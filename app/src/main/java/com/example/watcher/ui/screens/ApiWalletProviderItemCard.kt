@@ -12,6 +12,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -50,7 +51,8 @@ internal fun ProviderItemCard(
     onTest: () -> Unit,
     onDelete: () -> Unit,
     onSetDefault: () -> Unit,
-    onToggleEnabled: (Boolean) -> Unit
+    onToggleEnabled: (Boolean) -> Unit,
+    onExport: () -> Unit = {}
 ) {
     val defaultAccent = Color(0xFFB7791F)
     val defaultContainer = Color(0xFFFFF6E5)
@@ -222,6 +224,9 @@ internal fun ProviderItemCard(
                     )
                 }
                 Row {
+                    IconButton(onClick = onExport) {
+                        Icon(Icons.Default.Share, contentDescription = "导出配置")
+                    }
                     IconButton(onClick = onEdit) {
                         Icon(Icons.Default.Edit, contentDescription = "编辑供应商")
                     }

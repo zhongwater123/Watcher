@@ -13,6 +13,7 @@ import com.example.watcher.data.repository.AsrConnectivityStatus
 import com.example.watcher.data.repository.ArkConfig
 import com.example.watcher.data.repository.DEFAULT_DOUBAO_STREAMING_ASR_RESOURCE_ID
 import com.example.watcher.data.repository.LlmWalletRepository
+import com.example.watcher.data.repository.WalletShareManager
 import com.example.watcher.data.repository.ProviderConnectivitySnapshot
 import com.example.watcher.data.repository.ProviderConnectivityStatus
 import com.example.watcher.data.repository.VolcengineAsrCredentials
@@ -71,7 +72,10 @@ data class ApiWalletUiState(
     val asrConfig: AsrConfigUiState = AsrConfigUiState(),
     val statusMessage: String? = null,
     val errorMessage: String? = null,
-    val arkFallbackAvailable: Boolean = false
+    val arkFallbackAvailable: Boolean = false,
+    val showImportDialog: Boolean = false,
+    val showExportWarning: Boolean = false,
+    val pendingExportProviderId: String? = null
 ) {
     val defaultProvider: LlmProviderEntity?
         get() = providers.firstOrNull { it.id == defaultProviderId }
@@ -332,6 +336,108 @@ class ApiWalletViewModel(application: Application) : AndroidViewModel(applicatio
         _uiState.value = _uiState.value.copy(statusMessage = null, errorMessage = null)
     }
 
+    // --- Import / Export ---
+
+    fun showImportDialog() {
+        _uiState.value = _uiState.value.copy(showImportDialog = true, statusMessage = null, errorMessage = null)
+    }
+
+    fun dismissImportDialog() {
+        _uiState.value = _uiState.value.copy(showImportDialog = false)
+    }
+
+    fun requestExportProvider(providerId: String?) {
+        _uiState.value = _uiState.value.copy(
+            showExportWarning = true,
+            pendingExportProviderId = providerId,
+            statusMessage = null,
+            errorMessage = null
+        )
+    }
+
+    fun dismissExportWarning() {
+        _uiState.value = _uiState.value.copy(showExportWarning = false, pendingExportProviderId = null)
+    }
+
+    fun confirmExport(): String? {
+        val current = _uiState.value
+        val providerId = current.pendingExportProviderId
+        val asrCredentials = current.asrConfig.draft.toCredentials()
+        val json = if (providerId != null) {
+            val provider = current.providers.firstOrNull { it.id == providerId }
+            provider?.let { WalletShareManager.exportSingleProvider(it) }
+        } else {
+            if (current.providers.isEmpty() && !asrCredentials.isConfigured()) null
+            else WalletShareManager.exportAll(current.providers, asrCredentials)
+        }
+        _uiState.value = current.copy(
+            showExportWarning = false,
+            pendingExportProviderId = null,
+            statusMessage = if (json != null) "配置已复制到剪贴板，请注意保护您的密钥安全。" else null,
+            errorMessage = if (json == null) "没有可导出的配置。" else null
+        )
+        return json
+    }
+
+    fun importFromText(text: String) {
+        val result = WalletShareManager.importAll(text)
+        result.onSuccess { imported ->
+            viewModelScope.launch {
+                var providerCount = 0
+                for ((index, item) in imported.providers.withIndex()) {
+                    val provider = LlmProviderEntity(
+                        id = buildProviderId(item.name),
+                        name = item.name,
+                        endpoint = item.endpoint,
+                        apiKey = item.apiKey,
+                        modelName = item.modelName,
+                        enabled = true,
+                        createdAt = System.currentTimeMillis(),
+                        updatedAt = System.currentTimeMillis()
+                    )
+                    runCatching {
+                        walletRepository.upsertProvider(
+                            provider = provider,
+                            makeDefault = index == 0
+                        )
+                    }.onSuccess { providerCount++ }
+                }
+
+                var asrImported = false
+                imported.asr?.let { asr ->
+                    val credentials = VolcengineAsrCredentials(
+                        appKey = asr.appKey,
+                        accessKey = asr.accessKey,
+                        resourceId = asr.resourceId.ifBlank { DEFAULT_DOUBAO_STREAMING_ASR_RESOURCE_ID }
+                    )
+                    runCatching {
+                        asrConfigRepository.saveCredentials(credentials)
+                    }.onSuccess { asrImported = true }
+                }
+
+                val message = buildString {
+                    if (providerCount > 0) append("成功导入 $providerCount 个供应商")
+                    if (asrImported) {
+                        if (providerCount > 0) append("，")
+                        append("语音识别配置已导入")
+                    }
+                    append("。")
+                }
+
+                syncAsrConfig()
+                _uiState.value = _uiState.value.copy(
+                    showImportDialog = false,
+                    statusMessage = message,
+                    errorMessage = null
+                )
+            }
+        }.onFailure { error ->
+            _uiState.value = _uiState.value.copy(
+                errorMessage = error.message ?: "导入失败，请检查配置格式。"
+            )
+        }
+    }
+
     fun saveAsrDraft() {
         val current = _uiState.value
         val credentials = current.asrConfig.draft.toCredentials()
@@ -354,7 +460,7 @@ class ApiWalletViewModel(application: Application) : AndroidViewModel(applicatio
                     asrConfigRepository.clearConnectivitySnapshot()
                 }
             }.onSuccess {
-                syncAsrConfig(statusMessage = "直播语音识别配置已保存。")
+                syncAsrConfig(statusMessage = "语音识别配置已保存。")
             }.onFailure { error ->
                 _uiState.value = _uiState.value.copy(
                     asrConfig = _uiState.value.asrConfig.copy(isSaving = false),
@@ -376,7 +482,7 @@ class ApiWalletViewModel(application: Application) : AndroidViewModel(applicatio
                 asrConfigRepository.clearCredentials()
                 asrConfigRepository.clearConnectivitySnapshot()
             }.onSuccess {
-                syncAsrConfig(statusMessage = "直播语音识别配置已清空。")
+                syncAsrConfig(statusMessage = "语音识别配置已清空。")
             }.onFailure { error ->
                 _uiState.value = _uiState.value.copy(
                     asrConfig = _uiState.value.asrConfig.copy(isSaving = false),

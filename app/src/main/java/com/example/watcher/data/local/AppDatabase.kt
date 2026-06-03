@@ -15,9 +15,12 @@ import com.example.watcher.data.model.CouncilExpertEntity
 import com.example.watcher.data.model.CouncilKnowledgeEntity
 import com.example.watcher.data.model.CouncilTemplateEntity
 import com.example.watcher.data.model.TimelineEventEntity
+import com.example.watcher.data.model.VideoAudioAssetEntity
 import com.example.watcher.data.model.VideoProcessRun
 import com.example.watcher.data.model.VideoProcessTask
+import com.example.watcher.data.model.VideoRemoteFileBindingEntity
 import com.example.watcher.data.model.VideoSegmentRun
+import com.example.watcher.data.model.VideoSpeechTranscriptEntity
 import com.example.watcher.data.model.VideoStreamSettings
 import com.example.watcher.data.model.AiAudienceEntity
 import com.example.watcher.data.model.AiAudienceMessageEntity
@@ -43,6 +46,9 @@ import com.example.watcher.data.model.VideoTemplateEntity
         VideoProcessTask::class,
         VideoProcessRun::class,
         VideoSegmentRun::class,
+        VideoAudioAssetEntity::class,
+        VideoRemoteFileBindingEntity::class,
+        VideoSpeechTranscriptEntity::class,
         TimelineEventEntity::class,
         MonitorTemplateEntity::class,
         VideoTemplateEntity::class,
@@ -59,9 +65,10 @@ import com.example.watcher.data.model.VideoTemplateEntity
         BehaviorClaim::class,
         BehaviorReasoningLog::class,
         ObservationGoal::class,
-        SceneProfile::class
+        SceneProfile::class,
+        com.example.watcher.data.local.pose.PoseVideoSession::class
     ],
-    version = 45,
+    version = 57,
     exportSchema = false
 )
 @TypeConverters(DatabaseConverters::class)
@@ -74,6 +81,9 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun videoProcessTaskDao(): VideoProcessTaskDao
     abstract fun videoProcessRunDao(): VideoProcessRunDao
     abstract fun videoSegmentRunDao(): VideoSegmentRunDao
+    abstract fun videoAudioAssetDao(): VideoAudioAssetDao
+    abstract fun videoRemoteFileBindingDao(): VideoRemoteFileBindingDao
+    abstract fun videoSpeechTranscriptDao(): VideoSpeechTranscriptDao
     abstract fun timelineEventDao(): TimelineEventDao
     abstract fun templateDao(): TemplateDao
     abstract fun councilExpertDao(): CouncilExpertDao
@@ -85,6 +95,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun portraitDao(): PortraitDao
     abstract fun behaviorModelDao(): BehaviorModelDao
     abstract fun sceneProfileDao(): SceneProfileDao
+    abstract fun poseVideoSessionDao(): PoseVideoSessionDao
 
     companion object {
         private val MIGRATION_11_12 = object : Migration(11, 12) {
@@ -971,6 +982,277 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_45_46 = object : Migration(45, 46) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    "ALTER TABLE `video_process_tasks` ADD COLUMN `recordingScenario` TEXT NOT NULL DEFAULT 'general'"
+                )
+                database.execSQL(
+                    "ALTER TABLE `video_process_tasks` ADD COLUMN `speechInputEnabled` INTEGER NOT NULL DEFAULT 0"
+                )
+                database.execSQL(
+                    "ALTER TABLE `video_process_runs` ADD COLUMN `recordingScenario` TEXT NOT NULL DEFAULT 'general'"
+                )
+                database.execSQL(
+                    "ALTER TABLE `video_process_runs` ADD COLUMN `speechInputEnabled` INTEGER NOT NULL DEFAULT 0"
+                )
+                database.execSQL(
+                    "ALTER TABLE `video_process_runs` ADD COLUMN `structuredNoteJson` TEXT NOT NULL DEFAULT ''"
+                )
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `video_speech_transcripts` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `runId` INTEGER NOT NULL,
+                        `segmentIndex` INTEGER,
+                        `timestamp` INTEGER NOT NULL,
+                        `displayTimestamp` TEXT NOT NULL,
+                        `text` TEXT NOT NULL,
+                        `isFinal` INTEGER NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        FOREIGN KEY(`runId`) REFERENCES `video_process_runs`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_video_speech_transcripts_runId` ON `video_speech_transcripts` (`runId`)"
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_video_speech_transcripts_segmentIndex` ON `video_speech_transcripts` (`segmentIndex`)"
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_video_speech_transcripts_timestamp` ON `video_speech_transcripts` (`timestamp`)"
+                )
+                database.execSQL(
+                    """
+                    CREATE UNIQUE INDEX IF NOT EXISTS `index_video_speech_transcripts_runId_timestamp_text`
+                    ON `video_speech_transcripts` (`runId`, `timestamp`, `text`)
+                    """.trimIndent()
+                )
+            }
+        }
+
+        private val MIGRATION_46_47 = object : Migration(46, 47) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    "ALTER TABLE `video_process_runs` ADD COLUMN `fullMediaPath` TEXT"
+                )
+                database.execSQL(
+                    "ALTER TABLE `video_process_runs` ADD COLUMN `fullMediaDurationMs` INTEGER NOT NULL DEFAULT 0"
+                )
+                database.execSQL(
+                    "ALTER TABLE `video_process_runs` ADD COLUMN `fullMediaHasAudio` INTEGER NOT NULL DEFAULT 0"
+                )
+                database.execSQL(
+                    "ALTER TABLE `video_process_runs` ADD COLUMN `fullMediaVideoSource` TEXT NOT NULL DEFAULT ''"
+                )
+                database.execSQL(
+                    "ALTER TABLE `video_segment_runs` ADD COLUMN `mediaStartMs` INTEGER"
+                )
+                database.execSQL(
+                    "ALTER TABLE `video_segment_runs` ADD COLUMN `mediaEndMs` INTEGER"
+                )
+            }
+        }
+
+        private val MIGRATION_47_48 = object : Migration(47, 48) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    "ALTER TABLE `video_process_runs` ADD COLUMN `degradedReason` TEXT"
+                )
+            }
+        }
+
+        private val MIGRATION_48_49 = object : Migration(48, 49) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    "ALTER TABLE `video_process_runs` ADD COLUMN `markdownNote` TEXT NOT NULL DEFAULT ''"
+                )
+                database.execSQL(
+                    "ALTER TABLE `video_process_runs` ADD COLUMN `audioEnhancementInfo` TEXT NOT NULL DEFAULT ''"
+                )
+                database.execSQL(
+                    "ALTER TABLE `video_segment_runs` ADD COLUMN `evidenceJson` TEXT NOT NULL DEFAULT ''"
+                )
+            }
+        }
+
+        private val MIGRATION_49_50 = object : Migration(49, 50) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `video_audio_assets` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `runId` INTEGER NOT NULL,
+                        `segmentRunId` INTEGER,
+                        `segmentIndex` INTEGER,
+                        `assetType` TEXT NOT NULL,
+                        `localFilePath` TEXT NOT NULL,
+                        `durationMs` INTEGER NOT NULL,
+                        `sampleRate` INTEGER,
+                        `channelCount` INTEGER,
+                        `codecMime` TEXT NOT NULL,
+                        `sourceVideoPath` TEXT,
+                        `diagnosticsJson` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        FOREIGN KEY(`runId`) REFERENCES `video_process_runs`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE,
+                        FOREIGN KEY(`segmentRunId`) REFERENCES `video_segment_runs`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_video_audio_assets_runId` ON `video_audio_assets` (`runId`)"
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_video_audio_assets_segmentRunId` ON `video_audio_assets` (`segmentRunId`)"
+                )
+                database.execSQL(
+                    """
+                    CREATE UNIQUE INDEX IF NOT EXISTS `index_video_audio_assets_runId_assetType_segmentIndex`
+                    ON `video_audio_assets` (`runId`, `assetType`, `segmentIndex`)
+                    """.trimIndent()
+                )
+            }
+        }
+
+        private val MIGRATION_50_51 = object : Migration(50, 51) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE video_process_runs ADD COLUMN continuousAudioPath TEXT")
+                database.execSQL("ALTER TABLE video_process_runs ADD COLUMN continuousAudioDurationMs INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE video_process_runs ADD COLUMN continuousAudioStartedAt INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE video_process_runs ADD COLUMN outlineMarkdown TEXT NOT NULL DEFAULT ''")
+                database.execSQL("ALTER TABLE video_process_runs ADD COLUMN outlineGeneratedAt INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE video_process_runs ADD COLUMN reportVersion INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        private val MIGRATION_51_52 = object : Migration(51, 52) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `video_remote_file_bindings` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `runId` INTEGER NOT NULL,
+                        `segmentRunId` INTEGER,
+                        `assetKind` TEXT NOT NULL,
+                        `localPath` TEXT NOT NULL,
+                        `lengthBytes` INTEGER NOT NULL,
+                        `lastModified` INTEGER NOT NULL,
+                        `mediaType` TEXT NOT NULL,
+                        `arkFileId` TEXT,
+                        `status` TEXT NOT NULL,
+                        `uploadAttemptCount` INTEGER NOT NULL,
+                        `lastCheckedAt` INTEGER NOT NULL,
+                        `diagnosticsJson` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        FOREIGN KEY(`runId`) REFERENCES `video_process_runs`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE,
+                        FOREIGN KEY(`segmentRunId`) REFERENCES `video_segment_runs`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_video_remote_file_bindings_runId` ON `video_remote_file_bindings` (`runId`)"
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_video_remote_file_bindings_segmentRunId` ON `video_remote_file_bindings` (`segmentRunId`)"
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_video_remote_file_bindings_arkFileId` ON `video_remote_file_bindings` (`arkFileId`)"
+                )
+                database.execSQL(
+                    """
+                    CREATE UNIQUE INDEX IF NOT EXISTS `index_video_remote_file_bindings_runId_assetKind_localPath`
+                    ON `video_remote_file_bindings` (`runId`, `assetKind`, `localPath`)
+                    """.trimIndent()
+                )
+            }
+        }
+
+        private val MIGRATION_52_53 = object : Migration(52, 53) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    "ALTER TABLE `video_segment_runs` ADD COLUMN `durationMs` INTEGER NOT NULL DEFAULT 0"
+                )
+                database.execSQL(
+                    "ALTER TABLE `video_segment_runs` ADD COLUMN `wallClockStartMs` INTEGER"
+                )
+                database.execSQL(
+                    "ALTER TABLE `video_segment_runs` ADD COLUMN `wallClockEndMs` INTEGER"
+                )
+                database.execSQL(
+                    "ALTER TABLE `video_segment_runs` ADD COLUMN `interrupted` INTEGER NOT NULL DEFAULT 0"
+                )
+            }
+        }
+
+        private val MIGRATION_53_54 = object : Migration(53, 54) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    "ALTER TABLE `video_process_runs` ADD COLUMN `mergedSegmentCountActual` INTEGER NOT NULL DEFAULT 0"
+                )
+                database.execSQL(
+                    "ALTER TABLE `video_process_runs` ADD COLUMN `segmentsMissingMergedAnalysisAsset` INTEGER NOT NULL DEFAULT 0"
+                )
+                database.execSQL(
+                    "ALTER TABLE `video_process_runs` ADD COLUMN `audioOutlineAvailable` INTEGER NOT NULL DEFAULT 0"
+                )
+                database.execSQL(
+                    "ALTER TABLE `video_process_runs` ADD COLUMN `videoRefinementApplied` INTEGER NOT NULL DEFAULT 0"
+                )
+                database.execSQL(
+                    "ALTER TABLE `video_process_runs` ADD COLUMN `videoRefinementInputMode` TEXT NOT NULL DEFAULT ''"
+                )
+                database.execSQL(
+                    "ALTER TABLE `video_process_runs` ADD COLUMN `reportPipelineStagesJson` TEXT NOT NULL DEFAULT ''"
+                )
+            }
+        }
+
+        private val MIGRATION_54_55 = object : Migration(54, 55) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `pose_video_sessions` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `scenario` TEXT NOT NULL,
+                        `title` TEXT NOT NULL,
+                        `sourceVideoPath` TEXT NOT NULL,
+                        `sourceVideoDurationMs` INTEGER NOT NULL DEFAULT 0,
+                        `sourceVideoWidth` INTEGER NOT NULL DEFAULT 0,
+                        `sourceVideoHeight` INTEGER NOT NULL DEFAULT 0,
+                        `sourceFps` INTEGER NOT NULL DEFAULT 30,
+                        `frameCount` INTEGER NOT NULL DEFAULT 0,
+                        `landmarkCount` INTEGER NOT NULL DEFAULT 33,
+                        `rawPoseFilePath` TEXT NOT NULL DEFAULT '',
+                        `smoothPoseFilePath` TEXT NOT NULL DEFAULT '',
+                        `processingStatus` TEXT NOT NULL DEFAULT 'pending',
+                        `processingProgress` REAL NOT NULL DEFAULT 0,
+                        `processingError` TEXT,
+                        `thumbnailPath` TEXT,
+                        `createdAt` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL
+                    )
+                """.trimIndent())
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_pose_video_sessions_scenario` ON `pose_video_sessions` (`scenario`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_pose_video_sessions_processingStatus` ON `pose_video_sessions` (`processingStatus`)")
+            }
+        }
+
+        private val MIGRATION_55_56 = object : Migration(55, 56) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE `pose_video_sessions` ADD COLUMN `clipStartMs` INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE `pose_video_sessions` ADD COLUMN `clipEndMs` INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        private val MIGRATION_56_57 = object : Migration(56, 57) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE `pose_video_sessions` ADD COLUMN `beatFilePath` TEXT NOT NULL DEFAULT ''")
+                database.execSQL("ALTER TABLE `pose_video_sessions` ADD COLUMN `audioFileId` TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
         @Volatile
         private var instance: AppDatabase? = null
 
@@ -993,7 +1275,10 @@ abstract class AppDatabase : RoomDatabase() {
             MIGRATION_31_32, MIGRATION_32_33, MIGRATION_33_34, MIGRATION_34_35,
             MIGRATION_35_36, MIGRATION_36_37, MIGRATION_37_38, MIGRATION_38_39,
             MIGRATION_39_40, MIGRATION_40_41, MIGRATION_41_42, MIGRATION_42_43,
-            MIGRATION_43_44, MIGRATION_44_45
+            MIGRATION_43_44, MIGRATION_44_45, MIGRATION_45_46, MIGRATION_46_47,
+            MIGRATION_47_48, MIGRATION_48_49, MIGRATION_49_50, MIGRATION_50_51,
+            MIGRATION_51_52, MIGRATION_52_53, MIGRATION_53_54, MIGRATION_54_55, MIGRATION_55_56,
+            MIGRATION_56_57
         )
     }
 }

@@ -103,6 +103,7 @@ internal fun buildHubSummary(
         videoProcessingStatus.isBusy || videoProcessingStatus.stage !in setOf(
             VideoRunStatus.Idle,
             VideoRunStatus.Completed,
+            VideoRunStatus.CompletedDegraded,
             VideoRunStatus.Failed,
             VideoRunStatus.Cancelled
         ) -> HubSummaryModel(
@@ -193,7 +194,8 @@ internal fun videoProgress(status: VideoProcessingStatus): Float {
         VideoRunStatus.Preprocessing,
         VideoRunStatus.Analyzing -> 0.46f + (analysisProgress * 0.4f)
         VideoRunStatus.Summarizing -> 0.92f
-        VideoRunStatus.Completed -> 1f
+        VideoRunStatus.Completed,
+        VideoRunStatus.CompletedDegraded -> 1f
         VideoRunStatus.Failed,
         VideoRunStatus.Cancelled -> 0.64f
     }
@@ -210,6 +212,7 @@ internal fun videoStageLabel(stage: VideoRunStatus): String {
         VideoRunStatus.Analyzing -> "分析中"
         VideoRunStatus.Summarizing -> "汇总中"
         VideoRunStatus.Completed -> "已完成"
+        VideoRunStatus.CompletedDegraded -> "完成(降级)"
         VideoRunStatus.Failed -> "失败"
         VideoRunStatus.Cancelled -> "已取消"
     }

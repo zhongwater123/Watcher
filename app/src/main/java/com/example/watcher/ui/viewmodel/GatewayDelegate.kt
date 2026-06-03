@@ -4,6 +4,8 @@ import android.content.Context
 import android.graphics.Bitmap
 import com.example.watcher.agentframework.service.AgentFrameworkService
 import com.example.watcher.data.gateway.GatewayEvent
+import com.example.watcher.data.gateway.GatewayAutomationManager
+import com.example.watcher.data.gateway.GatewayRuntimeStatus
 import com.example.watcher.data.gateway.GatewayServer
 import com.example.watcher.data.gateway.GatewayServiceAnnouncer
 import com.example.watcher.data.gateway.GatewayTaskManager
@@ -27,6 +29,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
 import java.util.UUID
@@ -52,9 +55,11 @@ internal class GatewayDelegate(
 ) {
     private val taskManager = GatewayTaskManager()
     private val announcer = GatewayServiceAnnouncer(appContext)
+    private val automationManager = GatewayAutomationManager(appContext)
     private var server: GatewayServer? = null
     private val prefs = appContext.getSharedPreferences("gateway_prefs", Context.MODE_PRIVATE)
     private val secretStore = AppRuntimeSecretStore(appContext)
+    private var automationMonitorOwned = false
 
     // Stream ownership: phone ↔ remote handoff protocol
     enum class StreamOwner { Phone, Remote }
@@ -62,9 +67,27 @@ internal class GatewayDelegate(
     @Volatile private var reclaimRequested = false
 
     private val _running = MutableStateFlow(false)
+    private val _status = MutableStateFlow(
+        GatewayRuntimeStatus(
+            isRunning = false,
+            configuredPort = port,
+            localIp = getLocalIpAddress()
+        )
+    )
     val running: StateFlow<Boolean> = _running.asStateFlow()
+    val status: StateFlow<GatewayRuntimeStatus> = _status.asStateFlow()
     val apiKey: String get() = readOrCreateApiKey()
     val port: Int get() = prefs.getInt("port", GatewayServer.DEFAULT_PORT)
+
+    init {
+        automationManager.onRulesChanged = ::reconcileAutomationMonitoring
+        scope.launch {
+            monitorManager.monitorStatus.collect { status ->
+                automationManager.onMonitorStatusChanged(status)
+            }
+        }
+        reconcileAutomationMonitoring()
+    }
 
     fun toggle(enabled: Boolean) {
         if (enabled) start() else stop()
@@ -106,6 +129,13 @@ internal class GatewayDelegate(
 
     private fun start() {
         if (server != null) return
+        updateStatus { current ->
+            current.copy(
+                configuredPort = port,
+                localIp = getLocalIpAddress(),
+                lastError = null
+            )
+        }
         scope.launch(Dispatchers.IO) {
             registerExecutors()
             val ports = listOf(port, 8081, 8090, 9090)
@@ -116,6 +146,9 @@ internal class GatewayDelegate(
                     localIpProvider = ::getLocalIpAddress,
                     frameProvider = { monitorManager.currentFrame.value },
                     taskManager = taskManager,
+                    automationManager = automationManager,
+                    gatewayStatusProvider = ::gatewayStatusMap,
+                    onRequestObserved = ::recordRequest,
                     agentService = agentService,
                     commentaryStateProvider = {
                         val commentary = liveCommentaryRepository.commentaryState.value
@@ -181,14 +214,48 @@ internal class GatewayDelegate(
                 try {
                     s.start()
                     server = s
-                    announcer.register(p)
+                    val identity = automationManager.deviceIdentity()
+                    announcer.register(
+                        p,
+                        attributes = mapOf(
+                            "deviceId" to identity.deviceId,
+                            "serviceVersion" to identity.serviceVersion,
+                            "cap" to identity.capabilities.joinToString(",")
+                        )
+                    )
                     _running.value = true
+                    updateStatus { current ->
+                        current.copy(
+                            isRunning = true,
+                            configuredPort = port,
+                            listeningPort = p,
+                            localIp = getLocalIpAddress(),
+                            startedAt = System.currentTimeMillis(),
+                            lastError = null
+                        )
+                    }
                     android.util.Log.d("Gateway", "Started on port $p")
                     return@launch
                 } catch (e: Exception) {
+                    updateStatus { current ->
+                        current.copy(
+                            isRunning = false,
+                            listeningPort = null,
+                            localIp = getLocalIpAddress(),
+                            lastError = "Port $p unavailable: ${e.message}"
+                        )
+                    }
                     android.util.Log.w("Gateway", "Port $p unavailable: ${e.message}")
                     try { s.stop() } catch (_: Exception) {}
                 }
+            }
+            updateStatus { current ->
+                current.copy(
+                    isRunning = false,
+                    listeningPort = null,
+                    localIp = getLocalIpAddress(),
+                    lastError = "Failed to start on any configured port."
+                )
             }
             android.util.Log.e("Gateway", "Failed to start on any port")
         }
@@ -199,6 +266,13 @@ internal class GatewayDelegate(
         server?.stop()
         server = null
         _running.value = false
+        updateStatus { current ->
+            current.copy(
+                isRunning = false,
+                listeningPort = null,
+                localIp = getLocalIpAddress()
+            )
+        }
     }
 
     private fun readOrCreateApiKey(): String {
@@ -361,6 +435,7 @@ internal class GatewayDelegate(
                         VideoRunStatus.Analyzing -> "analyzing"
                         VideoRunStatus.Summarizing -> "summarizing"
                         VideoRunStatus.Completed -> "completed"
+                        VideoRunStatus.CompletedDegraded -> "completed_degraded"
                         VideoRunStatus.Failed -> "failed"
                         VideoRunStatus.Cancelled -> "cancelled"
                         else -> "progress"
@@ -391,6 +466,77 @@ internal class GatewayDelegate(
                 }
             )
         }
+    }
+
+    private fun reconcileAutomationMonitoring() {
+        val needsDeskAbsenceMonitoring = automationManager.hasEnabledDeskAbsenceAutomation()
+        val currentlyRunning = monitorManager.monitorStatus.value.isRunning
+        if (needsDeskAbsenceMonitoring && !currentlyRunning) {
+            monitorManager.startMonitoring(buildDeskAbsenceAutomationTask())
+            automationMonitorOwned = true
+            return
+        }
+        if (!needsDeskAbsenceMonitoring && automationMonitorOwned) {
+            monitorManager.stopMonitoring()
+            automationMonitorOwned = false
+        }
+    }
+
+    private fun buildDeskAbsenceAutomationTask(): IntentResult {
+        return IntentResult(
+            title = "Desk absence automation",
+            userInput = "判断用户是否已经离开工位",
+            userRequirement = "当用户连续离开工位时触发桌面自动化",
+            originalSceneDescription = "Gateway automation rule for desk absence detection.",
+            checkInterval = 20,
+            promptTemplate = buildDeskAbsencePrompt(),
+            monitorMode = MonitorMode.SceneBaseline,
+            targetTrigger = TargetTrigger.OnAppear,
+            baselineSource = BaselineSource.CapturedFrame
+        ).normalized()
+    }
+
+    private fun buildDeskAbsencePrompt(): String = buildString {
+        appendLine("你是一个工位在席检测分析员。")
+        appendLine("请判断当前摄像头画面中的用户是否已经离开工位。")
+        appendLine()
+        appendLine("输出 JSON：")
+        appendLine("{\"status\":\"ALERT|WARNING|NORMAL\",\"summary\":\"一句话结论\",\"reason\":\"判断依据\",\"confidence\":0.0}")
+        appendLine()
+        appendLine("规则：")
+        appendLine("- ALERT：用户明显已经离开工位，座位为空或工位前无人。")
+        appendLine("- WARNING：用户可能离开，但证据不充分。")
+        appendLine("- NORMAL：用户仍在工位或明显处于画面内。")
+    }
+
+    private fun recordRequest(method: String, path: String) {
+        updateStatus { current ->
+            current.copy(
+                lastRequestAt = System.currentTimeMillis(),
+                lastRequestMethod = method,
+                lastRequestPath = path,
+                localIp = getLocalIpAddress()
+            )
+        }
+    }
+
+    private fun gatewayStatusMap(): Map<String, Any?> {
+        val status = _status.value
+        return mapOf(
+            "running" to status.isRunning,
+            "configuredPort" to status.configuredPort,
+            "listeningPort" to status.listeningPort,
+            "localIp" to status.localIp,
+            "startedAt" to status.startedAt,
+            "lastRequestAt" to status.lastRequestAt,
+            "lastRequestMethod" to status.lastRequestMethod,
+            "lastRequestPath" to status.lastRequestPath,
+            "lastError" to status.lastError
+        )
+    }
+
+    private fun updateStatus(transform: (GatewayRuntimeStatus) -> GatewayRuntimeStatus) {
+        _status.value = transform(_status.value)
     }
 
     private fun buildMonitorPrompt(objective: String, trigger: String): String = buildString {

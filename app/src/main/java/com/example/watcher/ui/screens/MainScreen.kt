@@ -51,6 +51,7 @@ import com.example.watcher.AgentConfigActivity
 import com.example.watcher.ApiWalletActivity
 import com.example.watcher.DigitalLifeCardActivity
 import com.example.watcher.LiteRtActivity
+import com.example.watcher.PoseEstimationActivity
 import com.example.watcher.data.model.AiAudienceEntity
 import com.example.watcher.data.model.AiAudienceLiveState
 import com.example.watcher.data.model.DanmakuItem
@@ -62,6 +63,7 @@ import com.example.watcher.data.model.StorageSummary
 import kotlinx.coroutines.flow.SharedFlow
 import com.example.watcher.data.model.VideoStreamSettings
 import com.example.watcher.ui.components.BottomGlassScrim
+import com.example.watcher.ui.components.CameraFallbackLens
 import com.example.watcher.ui.components.StreamSource
 import com.example.watcher.ui.components.SharedWorkspaceHeader
 import com.example.watcher.ui.components.SwipeCoachmarkOverlay
@@ -138,6 +140,7 @@ fun MainScreen(
     val councilState by viewModel.councilState.collectAsStateWithLifecycle()
     val councilEntryUiState by viewModel.councilEntryUiState.collectAsStateWithLifecycle()
     val gatewayRunning by viewModel.gatewayRunning.collectAsStateWithLifecycle()
+    val gatewayStatus by viewModel.gatewayStatus.collectAsStateWithLifecycle()
     val appUpdatePrompt by viewModel.appUpdatePrompt.collectAsStateWithLifecycle()
 
     var monitorRequestText by rememberSaveable(stateSaver = TextFieldValue.Saver) {
@@ -191,6 +194,24 @@ fun MainScreen(
         onStreamSourceChanged = viewModel::updateStreamSource,
         onRemoteStreamUnavailable = viewModel::recoverProvisionedDeviceAfterRuntimeDisconnect
     )
+
+    if (streamState.showCameraChooser) {
+        AlertDialog(
+            onDismissRequest = { streamState.chooseCameraLens(CameraFallbackLens.Front) },
+            title = { Text("选择摄像头") },
+            text = { Text("ESP32 视频流不可用，请选择降级画面来源：") },
+            confirmButton = {
+                TextButton(onClick = { streamState.chooseCameraLens(CameraFallbackLens.Front) }) {
+                    Text("前置摄像头")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { streamState.chooseCameraLens(CameraFallbackLens.Back) }) {
+                    Text("后置摄像头")
+                }
+            }
+        )
+    }
 
     // Orientation detection — landscape triggers immersive live room
     val configuration = LocalConfiguration.current
@@ -316,6 +337,15 @@ fun MainScreen(
     }
 
     val liteRtLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        if (settings.streamUrl.isNotBlank()) {
+            viewModel.setStreamPlaying(true)
+            viewModel.reconnectStream()
+        }
+    }
+
+    val poseEstimationLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) {
         if (settings.streamUrl.isNotBlank()) {
@@ -599,6 +629,9 @@ fun MainScreen(
                         onNavigateLiteRt = {
                             liteRtLauncher.launch(LiteRtActivity.createIntent(context))
                         },
+                        onNavigatePoseEstimation = {
+                            poseEstimationLauncher.launch(PoseEstimationActivity.createIntent(context))
+                        },
                         currentPage = HubPage.Hub,
                         pageOffset = pageOffset
                     )
@@ -744,6 +777,7 @@ fun MainScreen(
                         onExportCouncilExpert = viewModel::exportCouncilExpertTemplate,
                         onImportTemplate = viewModel::importTemplate,
                         gatewayRunning = gatewayRunning,
+                        gatewayStatus = gatewayStatus,
                         gatewayPort = viewModel.gatewayPort,
                         gatewayApiKey = viewModel.gatewayApiKey,
                         gatewayLocalIp = viewModel.getLocalIpAddress(),

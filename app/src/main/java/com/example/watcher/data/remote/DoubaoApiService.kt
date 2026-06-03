@@ -36,6 +36,14 @@ interface DoubaoApiService {
         @Part file: MultipartBody.Part
     ): ArkFileResponse
 
+    @Multipart
+    @POST("api/v3/files")
+    suspend fun uploadAudioFile(
+        @Header("Authorization") authorization: String,
+        @Part("purpose") purpose: RequestBody,
+        @Part file: MultipartBody.Part
+    ): ArkFileResponse
+
     @GET("api/v3/files/{fileId}")
     suspend fun getFile(
         @Header("Authorization") authorization: String,
@@ -53,7 +61,9 @@ interface DoubaoApiService {
 data class DoubaoRequest(
     val model: String,
     val input: List<Message>,
-    val stream: Boolean? = null
+    val stream: Boolean? = null,
+    @SerializedName("response_format") val responseFormat: ResponseFormat? = null,
+    val thinking: Thinking? = null
 )
 
 data class Message(
@@ -88,7 +98,24 @@ data class ImageContentItem(
 data class DoubaoVideoRequest(
     val model: String,
     val input: List<VideoMessage>,
-    val stream: Boolean? = null
+    val stream: Boolean? = null,
+    @SerializedName("response_format") val responseFormat: ResponseFormat? = null,
+    val thinking: Thinking? = null
+)
+
+data class ResponseFormat(
+    val type: String,
+    @SerializedName("json_schema") val jsonSchema: JsonSchemaResponseFormat? = null
+)
+
+data class JsonSchemaResponseFormat(
+    val name: String,
+    val schema: Map<String, Any?>,
+    val strict: Boolean = true
+)
+
+data class Thinking(
+    val type: String
 )
 
 data class VideoMessage(
@@ -99,7 +126,8 @@ data class VideoMessage(
 data class VideoContentItem(
     val type: String,
     val text: String? = null,
-    @SerializedName("file_id") val fileId: String? = null
+    @SerializedName("file_id") val fileId: String? = null,
+    @SerializedName("audio_url") val audioUrl: String? = null
 )
 
 data class DoubaoResponse(

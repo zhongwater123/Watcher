@@ -208,6 +208,8 @@ Practical consequences:
 
 This makes the framework usable by external local tools without coupling them to the Android UI.
 
+The gateway now also exposes device identity and optional automation-oriented endpoints. Those endpoints are adjacent to, but separate from, the agent runtime APIs described here.
+
 ## Memory and Knowledge Access
 
 The framework supports two coordinated access paths:

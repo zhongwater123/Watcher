@@ -199,8 +199,9 @@ internal fun LiveRoomScreen(
                     text = when (streamState.connectionStatus) {
                         ConnectionStatus.Connecting -> stringResource(R.string.stream_status_connecting)
                         is ConnectionStatus.Error -> (streamState.connectionStatus as ConnectionStatus.Error).message
-                        ConnectionStatus.Connected -> if (streamState.source == StreamSource.FrontCameraFallback) {
-                            "ESP32 不可用，已切到手机前置摄像头"
+                        ConnectionStatus.Connected -> if (streamState.source.isCameraFallback) {
+                            val cameraName = if (streamState.source == StreamSource.FrontCameraFallback) "前置" else "后置"
+                            "ESP32 不可用，已切到手机${cameraName}摄像头"
                         } else {
                             stringResource(R.string.stream_status_receiving)
                         }
@@ -451,8 +452,9 @@ internal fun LiveRoomScreen(
                         Text(
                             text = buildString {
                                 append(stringResource(R.string.stream_fps, streamState.fps))
-                                if (streamState.source == StreamSource.FrontCameraFallback) {
-                                    append(" · 前摄降级")
+                                if (streamState.source.isCameraFallback) {
+                                    val badge = if (streamState.source == StreamSource.FrontCameraFallback) "前摄降级" else "后摄降级"
+                                    append(" · $badge")
                                 }
                             },
                             color = Color.White.copy(alpha = 0.7f),
@@ -650,7 +652,7 @@ internal fun LiveRoomScreen(
                 val displayUrl = streamState.activeStreamUrl ?: settings.streamUrl
                 if (displayUrl.isNotBlank()) {
                     Text(
-                        text = if (streamState.source == StreamSource.FrontCameraFallback) {
+                        text = if (streamState.source.isCameraFallback) {
                             "当前视频源：$displayUrl"
                         } else {
                             displayUrl

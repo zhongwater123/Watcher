@@ -2,7 +2,6 @@ package com.example.watcher.data.gateway
 
 import android.graphics.Bitmap
 import com.google.gson.Gson
-import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 
 /**
@@ -11,169 +10,151 @@ import java.io.ByteArrayOutputStream
  */
 internal object GatewayRoutes {
 
-    private val gson = Gson()
+    const val ERROR_INVALID_API_KEY = "invalid_api_key"
+    const val ERROR_INVALID_BODY = "invalid_body"
+    const val ERROR_MISSING_FIELD = "missing_field"
+    const val ERROR_NOT_FOUND = "not_found"
+    const val ERROR_INVALID_STATE = "invalid_state"
+    const val ERROR_NOT_IMPLEMENTED = "not_implemented"
+    const val ERROR_SERVICE_UNAVAILABLE = "service_unavailable"
+    const val ERROR_CONFLICT = "conflict"
+    const val ERROR_UNKNOWN_TOOL = "unknown_tool"
+    const val ERROR_INTERNAL = "internal_error"
+    const val ERROR_INVALID_TOKEN = "invalid_token"
 
-    // ── GET /api/capabilities ─────────────────────────────────────
+    private val gson = Gson()
 
     fun capabilities(baseUrl: String): Map<String, Any> = mapOf(
         "service" to mapOf(
             "name" to "Watcher",
-            "version" to "1.0",
-            "description" to "Watcher is an AI-powered visual monitoring service running on a mobile phone with a camera. It can continuously monitor camera feeds for changes, record and analyze video segments, and run multi-expert council analysis in real-time. External AI agents can remotely invoke these capabilities via this REST API."
+            "version" to "1.1",
+            "description" to "Watcher exposes LAN APIs for visual monitoring, video analysis, agent runtime control, stream ownership handoff, and commentary state polling."
         ),
+        "protocolVersion" to "2026-05-automation-v1",
         "auth" to mapOf(
             "type" to "api_key",
             "header" to "X-API-Key",
-            "note" to "All /api/ endpoints except /api/health require X-API-Key header."
+            "queryFallback" to "api_key",
+            "bindingTokenHeader" to "Authorization: Bearer <token> or X-Binding-Token",
+            "note" to "All /api/ endpoints except /api/health and /api/device/identity require an API key. Automation endpoints may also accept a paired binding token."
         ),
-        "base_url" to baseUrl,
+        "baseUrl" to baseUrl,
+        "responseEnvelope" to mapOf(
+            "success" to mapOf("ok" to true, "data" to "payload", "meta" to "{timestamp,count,nextSince}"),
+            "error" to mapOf("ok" to false, "error" to "human readable message", "errorCode" to "stable_code", "details" to "optional object", "retryable" to false)
+        ),
+        "polling" to mapOf(
+            "taskEvents" to "GET /api/tasks/{id}/events?afterEventId=<n> or ?since=<timestamp>",
+            "commentaryEntries" to "GET /api/commentary/entries?since=<timestamp>",
+            "automationEvents" to "GET /api/automations/{id}/events?afterEventId=<n> or ?since=<timestamp>"
+        ),
         "endpoints" to mapOf(
-            "health" to mapOf("method" to "GET", "url" to "$baseUrl/api/health", "auth" to false, "description" to "Health check. Returns stream connection status."),
-            "capabilities" to mapOf("method" to "GET", "url" to "$baseUrl/api/capabilities", "auth" to true, "description" to "This endpoint. Returns full API schema."),
-            "snapshot" to mapOf("method" to "GET", "url" to "$baseUrl/api/stream/snapshot", "auth" to true, "returns" to "image/jpeg", "description" to "Returns current camera frame as JPEG image."),
-            "create_task" to mapOf("method" to "POST", "url" to "$baseUrl/api/tasks", "auth" to true, "body" to "application/json", "description" to "Create and execute a task. Body: {\"tool\":\"<name>\", ...params}"),
-            "list_tasks" to mapOf("method" to "GET", "url" to "$baseUrl/api/tasks", "auth" to true, "description" to "List all tasks (max 20, newest first)."),
-            "get_task" to mapOf("method" to "GET", "url" to "$baseUrl/api/tasks/{id}", "auth" to true, "description" to "Get task status, result, and accumulated events."),
-            "get_task_snapshot" to mapOf("method" to "GET", "url" to "$baseUrl/api/tasks/{id}/snapshot", "auth" to true, "returns" to "image/jpeg", "description" to "Get current camera frame for a running task."),
-            "get_task_events" to mapOf("method" to "GET", "url" to "$baseUrl/api/tasks/{id}/events", "auth" to true, "description" to "Get task event history array."),
-            "cancel_task" to mapOf("method" to "DELETE", "url" to "$baseUrl/api/tasks/{id}", "auth" to true, "description" to "Cancel a running task (e.g. stop monitoring)."),
-            "list_agents" to mapOf("method" to "GET", "url" to "$baseUrl/api/agents", "auth" to true, "description" to "List registered autonomous agents."),
-            "get_agent" to mapOf("method" to "GET", "url" to "$baseUrl/api/agents/{id}", "auth" to true, "description" to "Get one registered agent profile."),
-            "start_agent_runtime" to mapOf("method" to "POST", "url" to "$baseUrl/api/agents/{id}/runs", "auth" to true, "description" to "Start a long-lived autonomous runtime for an agent."),
-            "list_agent_runtimes" to mapOf("method" to "GET", "url" to "$baseUrl/api/agents/{id}/runs", "auth" to true, "description" to "List autonomous runtimes for an agent."),
-            "get_agent_runtime" to mapOf("method" to "GET", "url" to "$baseUrl/api/agents/runs/{runtimeId}", "auth" to true, "description" to "Get one autonomous runtime snapshot."),
-            "send_agent_signal" to mapOf("method" to "POST", "url" to "$baseUrl/api/agents/runs/{runtimeId}/signals", "auth" to true, "description" to "Send a signal to a running autonomous agent."),
-            "get_agent_runtime_events" to mapOf("method" to "GET", "url" to "$baseUrl/api/agents/runs/{runtimeId}/events", "auth" to true, "description" to "List autonomous runtime events."),
-            "stop_agent_runtime" to mapOf("method" to "DELETE", "url" to "$baseUrl/api/agents/runs/{runtimeId}", "auth" to true, "description" to "Stop a running autonomous agent runtime."),
-            "stream_status" to mapOf("method" to "GET", "url" to "$baseUrl/api/stream/status", "auth" to true, "description" to "Check stream ownership. Returns {owner: 'phone'|'remote', reclaimRequested: bool, streamUrl: string}. Remote clients should poll this to detect reclaim requests."),
-            "stream_handoff" to mapOf("method" to "POST", "url" to "$baseUrl/api/stream/handoff", "auth" to true, "description" to "Phone releases its ESP32 connection and returns the direct stream URL. Remote client connects to streamUrl directly."),
-            "stream_reclaim" to mapOf("method" to "POST", "url" to "$baseUrl/api/stream/reclaim", "auth" to true, "description" to "Phone requests the stream back. Sets reclaimRequested flag. Remote client should poll /api/stream/status, disconnect when it sees the flag, then call /api/stream/release."),
-            "stream_release" to mapOf("method" to "POST", "url" to "$baseUrl/api/stream/release", "auth" to true, "description" to "Remote client confirms it has disconnected from ESP32. Phone automatically reconnects."),
-            "commentary_state" to mapOf("method" to "GET", "url" to "$baseUrl/api/commentary/state", "auth" to true, "description" to "Get live AI commentary state (requires commentary active in app). Returns isActive, entries, scene/entity memory, and memory summaries."),
-            "commentary_entries" to mapOf("method" to "GET", "url" to "$baseUrl/api/commentary/entries?since={timestamp}", "auth" to true, "description" to "Get commentary entries. Use ?since=<wallClockStartTime> for incremental polling. Each entry has segmentIndex, wallClockStartTime, displayTimestamp, text, status, streamingText."),
-            "commentary_ask" to mapOf("method" to "POST", "url" to "$baseUrl/api/commentary/ask", "auth" to true, "body" to "application/json", "description" to "Send observation requests to AI commentators. Body: {\"requests\": [\"describe the person in red\", ...]}. Max 8 concurrent requests, auto-expire after serving.")
+            "health" to endpoint("GET", "$baseUrl/api/health", false, "Health check with service availability summary."),
+            "device_identity" to endpoint("GET", "$baseUrl/api/device/identity", false, "Returns a stable device identity for zero-config discovery."),
+            "device_pair" to endpoint("POST", "$baseUrl/api/device/pair", true, "Pairs a desktop watcher bridge and returns a binding token.", body = """{"bridgeId":"watcher-desktop","bridgeName":"Desktop"}"""),
+            "capabilities" to endpoint("GET", "$baseUrl/api/capabilities", true, "Returns the gateway protocol contract."),
+            "stream_snapshot" to endpoint("GET", "$baseUrl/api/stream/snapshot", true, "Returns the current frame as image/jpeg.", returns = "image/jpeg"),
+            "tasks_create" to endpoint("POST", "$baseUrl/api/tasks", true, "Create and execute a task.", body = """{"tool":"<name>", ...params}"""),
+            "tasks_list" to endpoint("GET", "$baseUrl/api/tasks", true, "List tasks, newest first."),
+            "tasks_get" to endpoint("GET", "$baseUrl/api/tasks/{id}", true, "Get one task including current status and accumulated events."),
+            "tasks_events" to endpoint("GET", "$baseUrl/api/tasks/{id}/events?afterEventId={n}&since={timestamp}", true, "Get task events incrementally or in full."),
+            "tasks_snapshot" to endpoint("GET", "$baseUrl/api/tasks/{id}/snapshot", true, "Get the current frame for a running task.", returns = "image/jpeg"),
+            "tasks_cancel" to endpoint("DELETE", "$baseUrl/api/tasks/{id}", true, "Cancel a running task."),
+            "agents_list" to endpoint("GET", "$baseUrl/api/agents", true, "List registered agents."),
+            "agents_get" to endpoint("GET", "$baseUrl/api/agents/{id}", true, "Get one agent profile."),
+            "agent_runs_list" to endpoint("GET", "$baseUrl/api/agents/{id}/runs", true, "List runtime records for an agent."),
+            "agent_runs_create" to endpoint("POST", "$baseUrl/api/agents/{id}/runs", true, "Start an autonomous runtime for an agent."),
+            "agent_runtime_get" to endpoint("GET", "$baseUrl/api/agents/runs/{runtimeId}", true, "Get one autonomous runtime snapshot."),
+            "agent_runtime_events" to endpoint("GET", "$baseUrl/api/agents/runs/{runtimeId}/events", true, "Get autonomous runtime events."),
+            "agent_runtime_signal" to endpoint("POST", "$baseUrl/api/agents/runs/{runtimeId}/signals", true, "Send a signal to a runtime."),
+            "agent_runtime_stop" to endpoint("DELETE", "$baseUrl/api/agents/runs/{runtimeId}", true, "Stop an autonomous runtime."),
+            "stream_status" to endpoint("GET", "$baseUrl/api/stream/status", true, "Check stream ownership and reclaim status."),
+            "stream_handoff" to endpoint("POST", "$baseUrl/api/stream/handoff", true, "Release the phone-owned stream and return the remote stream URL."),
+            "stream_reclaim" to endpoint("POST", "$baseUrl/api/stream/reclaim", true, "Request that the remote client release the stream."),
+            "stream_release" to endpoint("POST", "$baseUrl/api/stream/release", true, "Confirm the remote client has released the stream."),
+            "commentary_state" to endpoint("GET", "$baseUrl/api/commentary/state", true, "Return live commentary state and speech state."),
+            "commentary_entries" to endpoint("GET", "$baseUrl/api/commentary/entries?since={timestamp}", true, "Return commentary entries, optionally incrementally."),
+            "commentary_ask" to endpoint("POST", "$baseUrl/api/commentary/ask", true, "Submit observation requests to commentary consumers.", body = """{"requests":["..."]}"""),
+            "automations_create" to endpoint("POST", "$baseUrl/api/automations", true, "Create an automation rule for gateway-triggered desktop workflows."),
+            "automations_list" to endpoint("GET", "$baseUrl/api/automations", true, "List automation rules."),
+            "automations_get" to endpoint("GET", "$baseUrl/api/automations/{id}", true, "Get one automation rule."),
+            "automations_update" to endpoint("PATCH", "$baseUrl/api/automations/{id}", true, "Update one automation rule."),
+            "automations_events" to endpoint("GET", "$baseUrl/api/automations/{id}/events?afterEventId={n}&since={timestamp}", true, "Poll automation trigger events incrementally."),
+            "automations_ack" to endpoint("POST", "$baseUrl/api/automations/{id}/ack", true, "Acknowledge a delivered automation event.", body = """{"eventId":1,"status":"completed","message":"optional"}""")
         ),
-        "task_lifecycle" to mapOf(
-            "statuses" to listOf("Pending", "Running", "Completed", "Failed", "Cancelled"),
-            "flow" to "Pending → Running → Completed/Failed. Long-running tasks (monitor) stay Running until DELETE cancels them.",
-            "events" to "Each task has an 'events' array. Poll GET /api/tasks/{id} to see new events. Each event has 'type', 'data', and 'timestamp'."
-        ),
-        "agent_guide" to mapOf(
-            "language" to "The API accepts both English and Chinese in all text fields (objective, task, etc.). Responses include Chinese text from AI analysis. Use UTF-8 encoding.",
-            "calling_convention" to listOf(
-                "1. POST /api/tasks with JSON body {\"tool\":\"<name>\", \"param1\":\"value1\", ...}",
-                "2. Save the returned task 'id' from response.data.id",
-                "3. Poll GET /api/tasks/{id} periodically to check status and read events",
-                "4. For monitor tasks: events contain 'check_result' with fields: result (NORMAL/WARNING/ALERT), summary, reason, confidence",
-                "5. To stop a long-running task: DELETE /api/tasks/{id}"
-            ),
-            "http_client_notes" to listOf(
-                "This is a LAN-only service on a private IP. Standard HTTP fetch libraries (like browser fetch or MCP tools) may block private IPs due to SSRF protection. Use system-level HTTP clients instead:",
-                "- Linux/macOS: curl",
-                "- Windows: Use curl.exe full path (C:\\Windows\\System32\\curl.exe) to avoid PowerShell alias conflict, or use Invoke-RestMethod",
-                "- Python: requests library works fine with private IPs",
-                "- Node.js: axios or native http module works fine"
-            ),
-            "windows_powershell_example" to "Invoke-RestMethod -Uri '$baseUrl/api/tasks' -Method Post -Headers @{'X-API-Key'='YOUR_KEY'} -ContentType 'application/json' -Body '{\"tool\":\"monitor\",\"objective\":\"detect person entering room\",\"checkIntervalSeconds\":10}'",
-            "curl_example" to "curl -X POST -H 'X-API-Key: YOUR_KEY' -H 'Content-Type: application/json' -d '{\"tool\":\"monitor\",\"objective\":\"detect person entering room\",\"checkIntervalSeconds\":10}' $baseUrl/api/tasks",
-            "python_example" to "requests.post('$baseUrl/api/tasks', headers={'X-API-Key':'YOUR_KEY'}, json={'tool':'monitor','objective':'detect person entering room','checkIntervalSeconds':10})"
+        "taskLifecycle" to mapOf(
+            "statuses" to GatewayTaskStatus.values().map { it.name },
+            "flow" to "Pending -> Running -> Completed|Failed|Cancelled",
+            "eventFields" to listOf("id", "type", "data", "timestamp")
         ),
         "tools" to listOf(
-            mapOf(
-                "type" to "function",
-                "function" to mapOf(
-                    "name" to "snapshot",
-                    "description" to "获取当前摄像头画面的实时截图。返回截图元信息，实际图片通过 GET /api/stream/snapshot 获取。",
-                    "parameters" to mapOf(
-                        "type" to "object",
-                        "properties" to emptyMap<String, Any>(),
-                        "required" to emptyList<String>()
-                    )
-                ),
-                "example" to mapOf(
-                    "request" to mapOf("tool" to "snapshot"),
-                    "response_fields" to "format, size, message"
-                )
+            tool(
+                name = "snapshot",
+                description = "获取当前摄像头画面的实时截图。实际图片通过 GET /api/stream/snapshot 获取。",
+                properties = emptyMap(),
+                required = emptyList<String>()
             ),
-            mapOf(
-                "type" to "function",
-                "function" to mapOf(
-                    "name" to "monitor",
-                    "description" to "创建持续监控任务。系统会按设定间隔分析摄像头画面，检测是否满足监控条件。检测到目标事件时产生 ALERT 事件。任务持续运行直到被 DELETE 取消。通过 GET /api/tasks/{id} 轮询获取 events 数组中的 check_result 事件。",
-                    "parameters" to mapOf(
-                        "type" to "object",
-                        "properties" to mapOf(
-                            "objective" to mapOf("type" to "string", "description" to "监控目标，用自然语言描述需要检测什么。例如：'有人进入房间就通知我'、'检测桌上的快递是否被取走'"),
-                            "checkIntervalSeconds" to mapOf("type" to "integer", "description" to "检查间隔（秒），范围 2-300，默认 30。间隔越短检测越及时但消耗更多 API 额度", "default" to 30),
-                            "triggerCondition" to mapOf("type" to "string", "description" to "可选的触发条件补充说明，帮助 AI 更准确判断")
-                        ),
-                        "required" to listOf("objective")
-                    )
+            tool(
+                name = "monitor",
+                description = "创建持续监控任务，并通过 events 返回 check_result。",
+                properties = mapOf(
+                    "objective" to mapOf("type" to "string"),
+                    "checkIntervalSeconds" to mapOf("type" to "integer", "default" to 30),
+                    "triggerCondition" to mapOf("type" to "string")
                 ),
-                "example" to mapOf(
-                    "request" to mapOf("tool" to "monitor", "objective" to "有人站起来就通知我", "checkIntervalSeconds" to 10),
-                    "events" to listOf(
-                        mapOf("type" to "check_result", "data" to mapOf("result" to "NORMAL|WARNING|ALERT", "summary" to "分析摘要", "totalChecks" to "累计检查次数", "alerts" to "告警次数"))
-                    )
-                )
+                required = listOf("objective")
             ),
-            mapOf(
-                "type" to "function",
-                "function" to mapOf(
-                    "name" to "video_analysis",
-                    "description" to "Record video segments from the camera and analyze each with AI. Records for the specified duration, splits into segments, analyzes each segment, then generates a final summary. Best for tasks requiring continuous observation before drawing conclusions. Returns summary, conclusion, and timeline events.",
-                    "parameters" to mapOf(
-                        "type" to "object",
-                        "properties" to mapOf(
-                            "task" to mapOf("type" to "string", "description" to "Analysis task description. Tell the AI what to look for in the video. Example: 'Count how many people enter and leave the room'"),
-                            "durationSeconds" to mapOf("type" to "integer", "description" to "Total recording duration in seconds (5-600). Default 60.", "default" to 60),
-                            "segmentSeconds" to mapOf("type" to "integer", "description" to "Duration of each analysis segment in seconds (2-300). Default 10. Shorter segments = more granular analysis.", "default" to 10)
-                        ),
-                        "required" to listOf("task")
-                    )
+            tool(
+                name = "video_analysis",
+                description = "录制视频片段并逐段分析，返回最终 summary、conclusion 和 timeline。",
+                properties = mapOf(
+                    "task" to mapOf("type" to "string"),
+                    "durationSeconds" to mapOf("type" to "integer", "default" to 60),
+                    "segmentSeconds" to mapOf("type" to "integer", "default" to 10)
                 ),
-                "example" to mapOf(
-                    "request" to mapOf("tool" to "video_analysis", "task" to "Observe and describe all activities in the scene", "durationSeconds" to 30, "segmentSeconds" to 10),
-                    "events" to listOf(
-                        mapOf("type" to "recording", "data" to "Progress updates during recording"),
-                        mapOf("type" to "analyzing", "data" to "Progress updates during AI analysis"),
-                        mapOf("type" to "completed", "data" to "Final status with summary")
-                    ),
-                    "result_fields" to "runId, status, summary, conclusion, segmentCount, durationSeconds, timelineEvents[]"
-                )
+                required = listOf("task")
             ),
             mapOf(
                 "type" to "function",
                 "function" to mapOf(
                     "name" to "council",
-                    "description" to "启动智囊团多专家实时分析。多个 AI 专家（风险雷达、意图解码、策略引擎等）同时分析摄像头画面和语音，经过讨论后给出综合建议。适合面试、会议、谈判等需要深度分析的场景。（尚未实现）",
-                    "parameters" to mapOf(
-                        "type" to "object",
-                        "properties" to mapOf(
-                            "sceneType" to mapOf("type" to "string", "description" to "场景类型", "enum" to listOf("Meeting", "Interview", "Speech", "General"), "default" to "General"),
-                            "objective" to mapOf("type" to "string", "description" to "分析目标，描述智囊团需要帮你判断什么"),
-                            "focus" to mapOf("type" to "string", "description" to "重点关注的维度，用分号分隔"),
-                            "speakerRole" to mapOf("type" to "string", "description" to "用户在场景中的角色"),
-                            "targetRole" to mapOf("type" to "string", "description" to "对方的角色"),
-                            "background" to mapOf("type" to "string", "description" to "补充背景信息")
-                        ),
-                        "required" to listOf("objective")
-                    )
+                    "description" to "智囊团多专家分析入口。",
+                    "parameters" to mapOf("type" to "object")
                 ),
                 "status" to "not_implemented"
+            )
+        ),
+        "automations" to listOf(
+            mapOf(
+                "triggerType" to GatewayAutomationManager.TRIGGER_DESK_ABSENCE,
+                "description" to "当监控结果连续判定为用户离开工位时触发。",
+                "params" to mapOf(
+                    "absenceHoldSeconds" to mapOf("type" to "integer", "default" to 180),
+                    "cooldownSeconds" to mapOf("type" to "integer", "default" to 900)
+                ),
+                "deliveryTypes" to listOf("desktop_bridge")
             )
         )
     )
 
-    // ── GET /api/health ───────────────────────────────────────────
-
-    fun health(hasFrame: Boolean): Map<String, Any> = mapOf(
+    fun health(
+        hasFrame: Boolean,
+        agentConfigured: Boolean,
+        commentaryConfigured: Boolean,
+        streamManagementConfigured: Boolean,
+        gateway: Map<String, Any?>? = null
+    ): Map<String, Any> = mapOf(
         "status" to "ok",
         "streamConnected" to hasFrame,
+        "services" to mapOf(
+            "agent" to agentConfigured,
+            "commentary" to commentaryConfigured,
+            "streamManagement" to streamManagementConfigured
+        ),
         "timestamp" to System.currentTimeMillis()
-    )
-
-    // ── GET /api/stream/snapshot ──────────────────────────────────
+    ).let { base ->
+        if (gateway == null) base else base + mapOf("gateway" to gateway)
+    }
 
     data class SnapshotResult(val bytes: ByteArray, val mimeType: String)
 
@@ -184,20 +165,70 @@ internal object GatewayRoutes {
         return SnapshotResult(bytes = out.toByteArray(), mimeType = "image/jpeg")
     }
 
-    // ── JSON helpers ──────────────────────────────────────────────
-
     fun toJson(obj: Any): String = gson.toJson(obj)
 
-    fun ok(data: Any? = null): String = toJson(GatewayResponse(ok = true, data = data))
+    fun ok(data: Any? = null, meta: GatewayMeta? = GatewayMeta()): String {
+        return toJson(GatewayResponse(ok = true, data = data, meta = meta))
+    }
 
-    fun error(message: String): String = toJson(GatewayResponse(ok = false, error = message))
+    fun error(
+        message: String,
+        errorCode: String,
+        details: Any? = null,
+        retryable: Boolean = false
+    ): String {
+        return toJson(
+            GatewayResponse(
+                ok = false,
+                error = message,
+                errorCode = errorCode,
+                details = details,
+                retryable = retryable
+            )
+        )
+    }
 
-    fun parseBody(body: String): Map<String, Any?> {
+    fun parseBody(body: String): Map<String, Any?>? {
+        if (body.isBlank()) return emptyMap()
         return try {
             @Suppress("UNCHECKED_CAST")
-            gson.fromJson(body, Map::class.java) as? Map<String, Any?> ?: emptyMap()
+            gson.fromJson(body, Map::class.java) as? Map<String, Any?>
         } catch (_: Exception) {
-            emptyMap()
+            null
         }
     }
+
+    private fun endpoint(
+        method: String,
+        url: String,
+        auth: Boolean,
+        description: String,
+        body: String? = null,
+        returns: String? = null
+    ): Map<String, Any> = buildMap {
+        put("method", method)
+        put("url", url)
+        put("auth", auth)
+        put("description", description)
+        if (body != null) put("body", body)
+        if (returns != null) put("returns", returns)
+    }
+
+    private fun tool(
+        name: String,
+        description: String,
+        properties: Map<String, Any>,
+        required: List<String>
+    ): Map<String, Any> = mapOf(
+        "type" to "function",
+        "function" to mapOf(
+            "name" to name,
+            "description" to description,
+            "parameters" to mapOf(
+                "type" to "object",
+                "properties" to properties,
+                "required" to required
+            )
+        )
+    )
 }

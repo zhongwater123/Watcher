@@ -1,0 +1,28 @@
+{
+  "watcher_wallet": 1,
+  "providers": [
+    {
+      "name": "Doubao Lite",
+      "endpoint": "https://ark.cn-beijing.volces.com/api/v3",
+      "apiKey": "c2fc5c4e-009c-41cf-a893-f75e35647666",
+      "modelName": "doubao-seed-2-0-lite-260215"
+    },
+    {
+      "name": "deepseek",
+      "endpoint": "https://api.deepseek.com",
+      "apiKey": "sk-26340d2eff7f40b5898bab9b38546ff5",
+      "modelName": "deepseek-chat"
+    },
+    {
+      "name": "moonshot",
+      "endpoint": "https://api.moonshot.cn/v1",
+      "apiKey": "sk-9fxikZISKbc97RMhAhfRAZR28BdeSOftjUWBsVFOol3xX7cD",
+      "modelName": "kimi-k2.5"
+    }
+  ],
+  "asr": {
+    "appKey": "1920637447",
+    "accessKey": "DIPg25yjcoRGMZuTCWamDKThOb_qY7EC",
+    "resourceId": "volc.bigasr.sauc.duration"
+  }
+}

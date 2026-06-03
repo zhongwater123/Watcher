@@ -132,8 +132,12 @@ sealed interface HistoryRecordDetail {
 
 data class VideoHistoryDetail(
     val run: VideoProcessRun,
+    val task: VideoProcessTask? = null,
     val segments: List<VideoSegmentRun>,
-    val events: List<TimelineEventEntity>
+    val audioAssets: List<VideoAudioAssetEntity> = emptyList(),
+    val remoteFileBindings: List<VideoRemoteFileBindingEntity> = emptyList(),
+    val events: List<TimelineEventEntity>,
+    val speechTranscripts: List<VideoSpeechTranscriptEntity> = emptyList()
 ) : HistoryRecordDetail {
     override val selection: HistoryRecordSelection =
         HistoryRecordSelection(HistoryRecordType.VideoAnalysis, run.id)
@@ -145,11 +149,15 @@ data class VideoHistoryDetail(
     override val updatedAt: Long = run.updatedAt
     override val canDelete: Boolean = run.status !in ACTIVE_VIDEO_RUN_STATUSES
     val mergedVideoPath: String? = run.mergedVideoPath
-    val previewPath: String? = run.mergedVideoPath ?: segments.firstNotNullOfOrNull { it.localFilePath }
+    val fullMediaPath: String? = run.fullMediaPath
+    val previewPath: String? = run.fullMediaPath
+        ?: run.mergedVideoPath
+        ?: segments.firstNotNullOfOrNull { it.localFilePath }
 }
 
 data class MonitorHistoryDetail(
     val run: MonitorRun,
+    val task: MonitorTask? = null,
     val events: List<MonitorEventEntity>,
     val media: List<MonitorMediaEntity>
 ) : HistoryRecordDetail {
@@ -193,6 +201,7 @@ fun videoRunStatusLabel(status: VideoRunStatus): String {
         VideoRunStatus.Analyzing -> "分析中"
         VideoRunStatus.Summarizing -> "汇总中"
         VideoRunStatus.Completed -> "已完成"
+        VideoRunStatus.CompletedDegraded -> "完成(降级)"
         VideoRunStatus.Failed -> "失败"
         VideoRunStatus.Cancelled -> "已取消"
     }

@@ -223,8 +223,9 @@ private fun PreviewHeader(
                 StatusPill(
                     text = buildString {
                         append("${streamState.fps} FPS")
-                        if (streamState.source == StreamSource.FrontCameraFallback) {
-                            append(" · 前摄")
+                        if (streamState.source.isCameraFallback) {
+                            val badge = if (streamState.source == StreamSource.FrontCameraFallback) "前摄" else "后摄"
+                            append(" · $badge")
                         }
                     },
                     accent = MaterialTheme.colorScheme.primary
@@ -257,8 +258,9 @@ private fun BoxScope.PreviewFooter(
         )
         Text(
             text = when (val status = streamState.connectionStatus) {
-                ConnectionStatus.Connected -> if (streamState.source == StreamSource.FrontCameraFallback) {
-                    "ESP32 流不可用，当前已自动切换到手机前置摄像头。"
+                ConnectionStatus.Connected -> if (streamState.source.isCameraFallback) {
+                    val cameraName = if (streamState.source == StreamSource.FrontCameraFallback) "前置" else "后置"
+                    "ESP32 流不可用，当前已自动切换到手机${cameraName}摄像头。"
                 } else {
                     "Auto-connect is on. Saving a new address reconnects right away."
                 }
@@ -519,7 +521,9 @@ internal fun HistoryTile(
     selected: Boolean,
     accent: Color,
     onClick: () -> Unit,
-    onDelete: (() -> Unit)? = null
+    onDelete: (() -> Unit)? = null,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null
 ) {
     val extendedColors = LocalWatcherExtendedColors.current
     Surface(
@@ -564,6 +568,11 @@ internal fun HistoryTile(
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
+            if (actionLabel != null && onAction != null) {
+                TextButton(onClick = onAction) {
+                    Text(actionLabel)
+                }
+            }
         }
     }
 }

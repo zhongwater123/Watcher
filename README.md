@@ -214,6 +214,7 @@ app/
   src/test/                 JVM unit tests
   src/androidTest/          Instrumentation and Compose UI tests
 docs/                       Architecture notes, iterations, and technical references
+mcp/                        Zero-build Watcher MCP server for generic gateway tools
 tools/                      Helper scripts
 ```
 

@@ -4,19 +4,23 @@ import android.graphics.Bitmap
 import com.example.watcher.data.local.TimelineEventDao
 import com.example.watcher.data.local.VideoProcessRunDao
 import com.example.watcher.data.local.VideoProcessTaskDao
+import com.example.watcher.data.model.RecordingScenario
 import com.example.watcher.data.model.TimelineEventEntity
 import com.example.watcher.data.model.VideoAnalysisResult
 import com.example.watcher.data.model.VideoProcessRun
 import com.example.watcher.data.model.VideoProcessTaskDraft
+import com.example.watcher.data.model.VideoRemoteAssetKind
 import com.example.watcher.data.model.VideoRunStatus
 import com.example.watcher.data.model.VideoSegmentFeedback
 import com.example.watcher.data.model.VideoTimelineEvent
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import java.io.File
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.ceil
 
@@ -25,7 +29,14 @@ internal class VideoExecutionOrchestrator(
     private val runDao: VideoProcessRunDao,
     private val timelineEventDao: TimelineEventDao,
     private val saveTask: suspend (VideoProcessTaskDraft) -> VideoProcessTaskDraft,
-    private val segmentProcessor: VideoSegmentProcessor
+    private val segmentProcessor: VideoSegmentProcessor,
+    private val segmentRecorder: VideoSegmentRecorder,
+    private val mediaAssembler: VideoMediaAssembler,
+    private val reportSummarizer: VideoReportSummarizer,
+    private val chunkAnalyzer: VideoEvidenceChunkAnalyzer,
+    private val reportRefiner: VideoReportRefiner,
+    private val audioOutlineProcessor: AudioOutlineProcessor,
+    private val remoteFileResolver: VideoRemoteFileResolver
 ) {
     suspend fun executeTask(
         draft: VideoProcessTaskDraft,
@@ -47,6 +58,8 @@ internal class VideoExecutionOrchestrator(
             templateLabel = task.templateLabel,
             taskTitle = taskEntity.title,
             taskRequirement = taskEntity.userRequirement,
+            recordingScenario = task.recordingScenario,
+            speechInputEnabled = false,
             status = VideoRunStatus.Recording,
             recordingStartedAt = now,
             totalDurationSeconds = task.plannedDurationSeconds,
@@ -89,41 +102,56 @@ internal class VideoExecutionOrchestrator(
             )
         )
 
+        val pipelineStages = mutableListOf<String>()
+        fun recordStage(stage: String) {
+            pipelineStages.add("${System.currentTimeMillis()}:$stage")
+        }
+
         val recordedSegmentCount = AtomicInteger(0)
         val analyzedSegmentCount = AtomicInteger(0)
         val recordedDurationSeconds = AtomicInteger(0)
         val nextCaptureOffsetSeconds = AtomicInteger(0)
         val recordedSegments = Channel<RecordedSegment>(Channel.UNLIMITED)
-        val partialTimelineEvents = java.util.Collections.synchronizedList(mutableListOf<VideoTimelineEvent>())
-        val segmentFeedbacks = java.util.Collections.synchronizedList(mutableListOf<VideoSegmentFeedback>())
+        val partialTimelineEvents = CopyOnWriteArrayList<VideoTimelineEvent>()
+        val segmentFeedbacks = CopyOnWriteArrayList<VideoSegmentFeedback>()
+        val segmentAudioResults = CopyOnWriteArrayList<Boolean>()
+        val analyzerResults = CopyOnWriteArrayList<SegmentExecutionResult>()
 
         val analyzer = async {
-            val results = mutableListOf<SegmentExecutionResult>()
-            for (recordedSegment in recordedSegments) {
+            val workers = List(ANALYSIS_PARALLELISM) {
+                async {
+                    for (recordedSegment in recordedSegments) {
                 ensureActive()
-                val result = segmentProcessor.analyzeRecordedSegment(
-                    recordedSegment = recordedSegment,
-                    task = task,
-                    segmentCount = scheduledSegmentCount,
-                    runId = runId,
-                    streamingOutputEnabled = streamingOutputEnabled,
-                    recordedSegmentCount = recordedSegmentCount,
-                    analyzedSegmentCount = analyzedSegmentCount,
-                    recordedDurationSeconds = recordedDurationSeconds,
-                    onStatus = onStatus
-                )
-                results += result
+                val result = runCatching {
+                    segmentProcessor.analyzeRecordedSegment(
+                        recordedSegment = recordedSegment,
+                        task = task,
+                        segmentCount = scheduledSegmentCount,
+                        runId = runId,
+                        streamingOutputEnabled = streamingOutputEnabled,
+                        recordedSegmentCount = recordedSegmentCount,
+                        analyzedSegmentCount = analyzedSegmentCount,
+                        recordedDurationSeconds = recordedDurationSeconds,
+                        onStatus = onStatus
+                    )
+                }.getOrElse { error ->
+                    if (error is kotlinx.coroutines.CancellationException) {
+                        throw error
+                    }
+                    segmentProcessor.markRecordedSegmentAnalysisFailed(recordedSegment, error)
+                }
+                analyzerResults += result
 
                 val offsetEvents = result.analysisResult.timelineEvents.map { event ->
                     event.copy(timestampSeconds = event.timestampSeconds + recordedSegment.startOffsetSeconds)
                 }
-                partialTimelineEvents += offsetEvents
+                partialTimelineEvents.addAll(offsetEvents)
                 val completedCount = analyzedSegmentCount.incrementAndGet()
-                segmentFeedbacks += VideoSegmentFeedback(
+                segmentFeedbacks.add(VideoSegmentFeedback(
                     segmentIndex = recordedSegment.segmentNumber,
                     summary = result.analysisResult.summary,
                     conclusion = result.analysisResult.conclusion
-                )
+                ))
 
                 onStatus(
                     VideoExecutionStatusUpdate(
@@ -159,8 +187,11 @@ internal class VideoExecutionOrchestrator(
                         segmentFeedbacks = segmentFeedbacks.toList()
                     )
                 )
+                    }
+                }
             }
-            results
+            workers.awaitAll()
+            analyzerResults.sortedBy { it.segment.segmentIndex }
         }
 
         val runStartedAt = System.currentTimeMillis()
@@ -168,7 +199,7 @@ internal class VideoExecutionOrchestrator(
         try {
             while (nextCaptureOffsetSeconds.get() < task.plannedDurationSeconds) {
                 ensureActive()
-                if (shouldStopRequested() && producedSegments > 0) {
+                if (shouldStopRequested()) {
                     break
                 }
 
@@ -201,11 +232,16 @@ internal class VideoExecutionOrchestrator(
                             stopRequested = shouldStopRequested()
                         )
                     )
-                    delay(waitMs)
+                    var remainingWaitMs = waitMs
+                    while (remainingWaitMs > 0L && !shouldStopRequested()) {
+                        val stepMs = remainingWaitMs.coerceAtMost(STOP_POLL_INTERVAL_MS)
+                        delay(stepMs)
+                        remainingWaitMs -= stepMs
+                    }
                 }
 
                 ensureActive()
-                if (shouldStopRequested() && producedSegments > 0) {
+                if (shouldStopRequested()) {
                     break
                 }
 
@@ -217,8 +253,9 @@ internal class VideoExecutionOrchestrator(
                 val segmentNumber = producedSegments + 1
                 val actualDuration = minOf(task.plannedSegmentDurationSeconds, remainingDuration)
                     .coerceAtLeast(1)
+                val segmentWindowStartedAt = System.currentTimeMillis()
 
-                val recordedSegment = segmentProcessor.recordSegmentClip(
+                val recordedSegment = segmentRecorder.recordSegmentClip(
                     runId = runId,
                     task = task,
                     segmentNumber = segmentNumber,
@@ -231,14 +268,19 @@ internal class VideoExecutionOrchestrator(
                     recordedSegmentCount = recordedSegmentCount,
                     analyzedSegmentCount = analyzedSegmentCount,
                     recordedDurationSeconds = recordedDurationSeconds,
+                    segmentWindowStartedAt = segmentWindowStartedAt,
+                    mediaClockStartedAt = runStartedAt,
+                    shouldStopRequested = shouldStopRequested,
                     onStatus = onStatus
                 )
 
                 producedSegments = segmentNumber
                 val producedCount = recordedSegmentCount.incrementAndGet()
-                val totalRecordedDuration = recordedDurationSeconds.addAndGet(actualDuration)
+                val recordedSegmentDuration = recordedSegment.durationSeconds.coerceAtLeast(1)
+                val totalRecordedDuration = recordedDurationSeconds.addAndGet(recordedSegmentDuration)
                 val nextOffset = scheduledOffsetSeconds + task.captureIntervalSeconds
                 nextCaptureOffsetSeconds.set(nextOffset)
+                segmentAudioResults.add(recordedSegment.hasAudio)
                 recordedSegments.send(recordedSegment)
 
                 val hasMoreScheduledSegments =
@@ -271,7 +313,9 @@ internal class VideoExecutionOrchestrator(
                             null
                         },
                         recordingSegmentIndex = (segmentNumber + 1).coerceAtMost(scheduledSegmentCount),
-                        stopRequested = shouldStopRequested()
+                        stopRequested = shouldStopRequested(),
+                        currentSegmentHasAudio = recordedSegment.hasAudio,
+                        segmentAudioResults = segmentAudioResults.toList()
                     )
                 )
             }
@@ -279,12 +323,128 @@ internal class VideoExecutionOrchestrator(
             recordedSegments.close()
         }
 
-        val segmentResults = analyzer.await()
+        val captureEndedAt = System.currentTimeMillis()
+        run = run.copy(
+            status = VideoRunStatus.Summarizing,
+            recordingEndedAt = run.recordingEndedAt ?: captureEndedAt,
+            updatedAt = captureEndedAt
+        )
+        runDao.upsert(run)
+
+        // Phase 1: Build master audio from recorded audio segment files, then generate outline
+        val segmentFiles = (1..recordedSegmentCount.get()).mapNotNull { idx ->
+            File(outputRoot, "video_runs/run_${runId}_segment_${idx}_audio.m4a").takeIf { it.exists() }
+        }
+        val masterAudioFile = runCatching {
+            audioOutlineProcessor.buildMasterAudioFromFiles(
+                runId = runId,
+                segmentFiles = segmentFiles,
+                outputRoot = outputRoot,
+                expectedDurationMs = recordedDurationSeconds.get() * 1_000L
+            )
+        }.getOrNull()
+
+        // Audio outline processor handles m4a→mp3 conversion internally via FFmpegKit.
+
+        if (masterAudioFile != null && masterAudioFile.exists() && masterAudioFile.length() > 0L) {
+            run = run.copy(
+                continuousAudioPath = masterAudioFile.absolutePath,
+                continuousAudioDurationMs = recordedDurationSeconds.get() * 1_000L,
+                updatedAt = System.currentTimeMillis()
+            )
+            runDao.upsert(run)
+
+            onStatus(
+                VideoExecutionStatusUpdate(
+                    stage = VideoRunStatus.Summarizing,
+                    runId = runId,
+                    segmentIndex = recordedSegmentCount.get(),
+                    segmentCount = scheduledSegmentCount,
+                    message = "正在根据完整音频生成大纲...",
+                    templateLabel = task.templateLabel,
+                    segmentDurationSeconds = task.plannedSegmentDurationSeconds,
+                    captureIntervalSeconds = task.captureIntervalSeconds,
+                    streamingEnabled = streamingOutputEnabled,
+                    isRecordingActive = false,
+                    isAnalysisActive = true,
+                    recordedSegmentCount = recordedSegmentCount.get(),
+                    analyzedSegmentCount = analyzedSegmentCount.get(),
+                    pendingSegmentCount = (recordedSegmentCount.get() - analyzedSegmentCount.get()).coerceAtLeast(0),
+                    recordedDurationSeconds = recordedDurationSeconds.get(),
+                    stopRequested = false
+                )
+            )
+
+            recordStage("audio_outline_started")
+            val outlineResult = runCatching {
+                audioOutlineProcessor.generateAudioOutline(
+                    runId = runId,
+                    audioFile = masterAudioFile,
+                    task = task,
+                    durationSeconds = recordedDurationSeconds.get()
+                )
+            }.getOrNull()
+
+            if (outlineResult != null) {
+                recordStage("audio_outline_completed")
+                run = run.copy(
+                    outlineMarkdown = outlineResult.markdownNote,
+                    outlineGeneratedAt = System.currentTimeMillis(),
+                    markdownNote = outlineResult.markdownNote,
+                    finalSummary = outlineResult.summary,
+                    reportVersion = 0,
+                    updatedAt = System.currentTimeMillis()
+                )
+                runDao.upsert(run)
+                onStatus(
+                    VideoExecutionStatusUpdate(
+                        stage = VideoRunStatus.Summarizing,
+                        runId = runId,
+                        segmentIndex = recordedSegmentCount.get(),
+                        segmentCount = scheduledSegmentCount,
+                        message = "大纲已生成，等待分片分析完成...",
+                        templateLabel = task.templateLabel,
+                        segmentDurationSeconds = task.plannedSegmentDurationSeconds,
+                        captureIntervalSeconds = task.captureIntervalSeconds,
+                        finalSummary = outlineResult.summary,
+                        streamingEnabled = streamingOutputEnabled,
+                        streamingBuffer = outlineResult.markdownNote,
+                        isRecordingActive = false,
+                        isAnalysisActive = analyzedSegmentCount.get() < recordedSegmentCount.get(),
+                        recordedSegmentCount = recordedSegmentCount.get(),
+                        analyzedSegmentCount = analyzedSegmentCount.get(),
+                        pendingSegmentCount = (recordedSegmentCount.get() - analyzedSegmentCount.get()).coerceAtLeast(0),
+                        recordedDurationSeconds = recordedDurationSeconds.get(),
+                        stopRequested = false,
+                        segmentFeedbacks = segmentFeedbacks.toList()
+                    )
+                )
+            } else {
+                recordStage("audio_outline_failed")
+            }
+        }
+
+        recordStage("segment_analysis_started")
+        val analyzerResult = runCatching { analyzer.await() }
+        if (analyzerResult.isFailure) {
+            val error = analyzerResult.exceptionOrNull()!!
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            analyzer.cancel()
+        }
+        val segmentResults = analyzerResult.getOrDefault(emptyList())
+        val analyzerError = analyzerResult.exceptionOrNull()
+        recordStage(if (analyzerError == null) "segment_analysis_completed" else "segment_analysis_failed")
+        val successfulSegmentResults = segmentResults.filter { it.segment.status == VideoRunStatus.Completed }
+        val failedAnalysisCount = segmentResults.count { it.segment.status == VideoRunStatus.Failed }
         if (segmentResults.isEmpty()) {
             run = run.copy(
-                status = VideoRunStatus.Cancelled,
-                recordingEndedAt = System.currentTimeMillis(),
-                errorMessage = null,
+                status = if (analyzerError != null) VideoRunStatus.Failed else VideoRunStatus.Cancelled,
+                recordingEndedAt = run.recordingEndedAt ?: System.currentTimeMillis(),
+                fullMediaPath = "",
+                fullMediaDurationMs = 0L,
+                fullMediaHasAudio = false,
+                fullMediaVideoSource = "split_audio_video_segments",
+                errorMessage = analyzerError?.message,
                 updatedAt = System.currentTimeMillis()
             )
             runDao.upsert(run)
@@ -318,8 +478,113 @@ internal class VideoExecutionOrchestrator(
             )
         }
 
+        if (successfulSegmentResults.isEmpty()) {
+            val fallbackSummary = "Recorded ${segmentResults.size} segment(s), but none could be analyzed. Check network/API connectivity and audio/video assets in debug details."
+            val fallbackResult = VideoAnalysisResult(
+                summary = fallbackSummary,
+                conclusion = "",
+                timelineEvents = emptyList(),
+                rawResponse = segmentResults.joinToString("\n") { it.analysisResult.rawResponse }
+            )
+            val (mergedVideoPath, mergeError) = runCatching {
+                mediaAssembler.mergeSegmentVideos(
+                    runId = runId,
+                    task = task,
+                    results = segmentResults,
+                    outputRoot = outputRoot
+                )
+            }.fold(
+                onSuccess = { it to null },
+                onFailure = { null to it.message }
+            )
+            mergedVideoPath?.let {
+                mediaAssembler.recordDerivedVideoAssetBinding(
+                    runId = runId,
+                    filePath = it,
+                    assetKind = VideoRemoteAssetKind.MasterVideo
+                )
+            }
+            val fallbackMasterAudioPath = run.continuousAudioPath
+                ?.takeIf(String::isNotBlank)
+                ?.takeIf { File(it).exists() && File(it).length() > 0L }
+                ?: runCatching {
+                    audioOutlineProcessor.buildMasterAudioAsset(
+                        runId = runId,
+                        results = segmentResults,
+                        outputRoot = outputRoot,
+                        expectedDurationMs = recordedDurationSeconds.get() * 1_000L
+                    )
+                }.getOrNull()
+            val fallbackFullMediaPath = mediaAssembler.mergeVideoWithMasterAudio(
+                runId = runId,
+                videoPath = mergedVideoPath,
+                audioPath = fallbackMasterAudioPath ?: run.continuousAudioPath,
+                outputRoot = outputRoot
+            )
+            val validation = mediaAssembler.validateMedia(fallbackFullMediaPath ?: mergedVideoPath)
+            run = run.copy(
+                status = VideoRunStatus.CompletedDegraded,
+                recordingEndedAt = run.recordingEndedAt ?: System.currentTimeMillis(),
+                continuousAudioPath = run.continuousAudioPath ?: fallbackMasterAudioPath,
+                continuousAudioDurationMs = run.continuousAudioDurationMs
+                    .takeIf { it > 0L }
+                    ?: recordedDurationSeconds.get() * 1_000L,
+                finalSummary = fallbackResult.summary,
+                finalConclusion = fallbackResult.conclusion,
+                rawModelSummary = fallbackResult.rawResponse,
+                mergedVideoPath = mergedVideoPath,
+                fullMediaPath = fallbackFullMediaPath ?: mergedVideoPath,
+                fullMediaDurationMs = validation.durationMs.takeIf { it > 0L }
+                    ?: recordedDurationSeconds.get() * 1_000L,
+                fullMediaHasAudio = validation.hasAudio,
+                fullMediaVideoSource = "split_audio_video_segments",
+                audioEnhancementInfo = segmentResults.firstOrNull { it.audioEnhancementInfo.isNotBlank() }
+                    ?.audioEnhancementInfo.orEmpty(),
+                errorMessage = null,
+                degradedReason = listOfNotNull(
+                    "All segment analyses failed; local media/audio assets were preserved.",
+                    mergeError?.let { "Video merge failed: $it" },
+                    validation.errorMessage?.takeIf { mergedVideoPath != null }?.let { "Media validation failed: $it" }
+                ).joinToString("; "),
+                updatedAt = System.currentTimeMillis()
+            )
+            runDao.upsert(run)
+            onStatus(
+                VideoExecutionStatusUpdate(
+                    stage = VideoRunStatus.CompletedDegraded,
+                    runId = runId,
+                    segmentIndex = recordedSegmentCount.get(),
+                    segmentCount = scheduledSegmentCount,
+                    message = fallbackSummary,
+                    templateLabel = task.templateLabel,
+                    segmentDurationSeconds = task.plannedSegmentDurationSeconds,
+                    captureIntervalSeconds = task.captureIntervalSeconds,
+                    finalSummary = fallbackResult.summary,
+                    finalConclusion = fallbackResult.conclusion,
+                    streamingEnabled = streamingOutputEnabled,
+                    isRecordingActive = false,
+                    isAnalysisActive = false,
+                    recordedSegmentCount = recordedSegmentCount.get(),
+                    analyzedSegmentCount = analyzedSegmentCount.get(),
+                    pendingSegmentCount = 0,
+                    recordedDurationSeconds = recordedDurationSeconds.get(),
+                    stopRequested = shouldStopRequested(),
+                    segmentFeedbacks = segmentFeedbacks.toList()
+                )
+            )
+            return@coroutineScope VideoExecutionResult(
+                task = task,
+                run = run,
+                finalResult = fallbackResult
+            )
+        }
+
         val allTimelineEvents = partialTimelineEvents.sortedBy { it.timestampSeconds }
-        val shouldSummarize = task.finalSummaryEnabled && segmentResults.size > 1
+        val shouldSummarize = task.finalSummaryEnabled &&
+            (
+                successfulSegmentResults.size > 1 ||
+                    task.recordingScenario != RecordingScenario.General.value
+            )
 
         onStatus(
             VideoExecutionStatusUpdate(
@@ -341,7 +606,7 @@ internal class VideoExecutionOrchestrator(
                 isAnalysisActive = shouldSummarize,
                 recordedSegmentCount = recordedSegmentCount.get(),
                 analyzedSegmentCount = analyzedSegmentCount.get(),
-                pendingSegmentCount = 0,
+                pendingSegmentCount = failedAnalysisCount,
                 recordedDurationSeconds = recordedDurationSeconds.get(),
                 remainingDurationSeconds = (task.plannedDurationSeconds - nextCaptureOffsetSeconds.get())
                     .coerceAtLeast(0),
@@ -350,27 +615,150 @@ internal class VideoExecutionOrchestrator(
             )
         )
 
-        val finalResult = try {
-            when {
-                segmentResults.size == 1 -> {
-                    segmentResults.single().analysisResult.copy(timelineEvents = allTimelineEvents)
+        val recordedForCoverage = recordedSegmentCount.get().coerceAtLeast(1)
+        val segmentFactPacketCount = successfulSegmentResults.count { it.segment.evidenceJson.isNotBlank() }
+        val hasEnoughSegmentFactPackets = segmentFactPacketCount * 4 >= recordedForCoverage * 3
+        // Avoid uploading the same video twice. Merged chunk analysis is only a recovery path
+        // when segment-level fact packets are too incomplete to support the final report.
+        val shouldAnalyzeMergedChunks = shouldSummarize && !hasEnoughSegmentFactPackets
+
+        val mergedChunkEvidence = if (shouldAnalyzeMergedChunks) {
+            recordStage("segment_merge_started")
+            val segmentFiles = successfulSegmentResults
+                .sortedBy { it.segment.segmentIndex }
+                .mapNotNull { result ->
+                    // Prefer the merged analysis file (video+audio) over the raw segment file
+                    val path = result.mergedAnalysisFilePath
+                        ?: result.segment.localFilePath
+                    path?.takeIf(String::isNotBlank)
+                        ?.let(::File)
+                        ?.takeIf { it.exists() && it.length() > 0L }
                 }
-
-                !task.finalSummaryEnabled -> segmentProcessor.combineSegmentResults(segmentResults, allTimelineEvents)
-
-                else -> {
-                    segmentProcessor.summarizeSegments(
-                        task = task,
-                        results = segmentResults,
+            val chunkPlans = VideoChunkPlanner().planChunks(segmentFiles)
+            val chunkFiles = runCatching {
+                mediaAssembler.mergeVideoChunks(
+                    runId = runId,
+                    chunkPlans = chunkPlans,
+                    outputRoot = outputRoot
+                )
+            }.getOrDefault(emptyList())
+            val evidence = mutableListOf<VideoMergedChunkResult>()
+            chunkFiles.forEachIndexed { index, chunkFile ->
+                onStatus(
+                    VideoExecutionStatusUpdate(
+                        stage = VideoRunStatus.Summarizing,
                         runId = runId,
+                        segmentIndex = recordedSegmentCount.get(),
                         segmentCount = scheduledSegmentCount,
-                        streamingOutputEnabled = streamingOutputEnabled,
+                        message = "Analyzing merged video chunk ${index + 1}/${chunkFiles.size}",
+                        templateLabel = task.templateLabel,
+                        segmentDurationSeconds = task.plannedSegmentDurationSeconds,
+                        captureIntervalSeconds = task.captureIntervalSeconds,
+                        streamingEnabled = streamingOutputEnabled,
+                        isRecordingActive = false,
+                        isAnalysisActive = true,
                         recordedSegmentCount = recordedSegmentCount.get(),
                         analyzedSegmentCount = analyzedSegmentCount.get(),
+                        pendingSegmentCount = failedAnalysisCount,
                         recordedDurationSeconds = recordedDurationSeconds.get(),
-                        segmentFeedbacks = segmentFeedbacks.toList(),
-                        onStatus = onStatus
-                    ).copy(timelineEvents = allTimelineEvents)
+                        remainingDurationSeconds = (task.plannedDurationSeconds - nextCaptureOffsetSeconds.get())
+                            .coerceAtLeast(0),
+                        stopRequested = shouldStopRequested(),
+                        segmentFeedbacks = segmentFeedbacks.toList()
+                    )
+                )
+                analyzeMergedVideoChunk(
+                    runId = runId,
+                    task = task,
+                    chunkFile = chunkFile,
+                    chunkIndex = index + 1,
+                    chunkCount = chunkFiles.size
+                ).also(evidence::add)
+            }
+            recordStage("segment_merge_completed")
+            evidence
+        } else {
+            emptyList()
+        }
+
+        val finalResult = try {
+            when {
+                successfulSegmentResults.size == 1 && !shouldSummarize -> {
+                    successfulSegmentResults.single().analysisResult.copy(timelineEvents = allTimelineEvents)
+                }
+
+                !task.finalSummaryEnabled -> reportSummarizer.combineSegmentResults(successfulSegmentResults, allTimelineEvents)
+
+                else -> {
+                    var reportResult = reportSummarizer.summarize(
+                        task = task,
+                        results = successfulSegmentResults,
+                        outlineMarkdown = run.outlineMarkdown,
+                        mergedChunkEvidence = mergedChunkEvidence
+                    ).let { result ->
+                        if (result.timelineEvents.isNotEmpty()) result
+                        else result.copy(timelineEvents = allTimelineEvents)
+                    }
+
+                    if (mergedChunkEvidence.isNotEmpty()) {
+                        recordStage("video_refinement_started")
+                        onStatus(
+                            VideoExecutionStatusUpdate(
+                                stage = VideoRunStatus.Summarizing,
+                                runId = runId,
+                                segmentIndex = recordedSegmentCount.get(),
+                                segmentCount = scheduledSegmentCount,
+                                message = "正在用视频证据校准报告...",
+                                pipelinePhase = "video_refinement",
+                                templateLabel = task.templateLabel,
+                                segmentDurationSeconds = task.plannedSegmentDurationSeconds,
+                                captureIntervalSeconds = task.captureIntervalSeconds,
+                                streamingEnabled = streamingOutputEnabled,
+                                isRecordingActive = false,
+                                isAnalysisActive = true,
+                                recordedSegmentCount = recordedSegmentCount.get(),
+                                analyzedSegmentCount = analyzedSegmentCount.get(),
+                                pendingSegmentCount = 0,
+                                recordedDurationSeconds = recordedDurationSeconds.get(),
+                                remainingDurationSeconds = 0,
+                                stopRequested = shouldStopRequested(),
+                                segmentFeedbacks = segmentFeedbacks.toList()
+                            )
+                        )
+                        val refinedMarkdown = runCatching {
+                            val chunksWithFileIds = mergedChunkEvidence.filter { it.arkFileId != null }
+                            var current = reportResult.markdownNote.ifBlank { reportResult.rawResponse }
+                            chunksWithFileIds.forEachIndexed { idx, chunk ->
+                                current = reportRefiner.refineWithVideo(
+                                    currentReport = current,
+                                    videoFileId = chunk.arkFileId!!,
+                                    task = task,
+                                    chunkIndex = idx + 1,
+                                    chunkCount = chunksWithFileIds.size
+                                )
+                            }
+                            current
+                        }.getOrNull()
+
+                        if (!refinedMarkdown.isNullOrBlank()) {
+                            recordStage("video_refinement_completed")
+                            reportResult = reportResult.copy(
+                                markdownNote = refinedMarkdown,
+                                rawResponse = refinedMarkdown
+                            )
+                            val chunksUsed = mergedChunkEvidence.count { it.arkFileId != null }
+                            run = run.copy(
+                                videoRefinementApplied = true,
+                                videoRefinementInputMode = if (chunksUsed == 1) "single_master" else "chunked_master",
+                                updatedAt = System.currentTimeMillis()
+                            )
+                            runDao.upsert(run)
+                        } else {
+                            recordStage("video_refinement_failed")
+                        }
+                    }
+
+                    reportResult
                 }
             }
         } catch (error: Exception) {
@@ -381,7 +769,14 @@ internal class VideoExecutionOrchestrator(
             )
         }
 
-        val mergedVideoPath = try {
+        // Audio outline fallback: if final report has no markdown but audio outline exists, use it
+        val finalResultWithFallback = if (finalResult.markdownNote.isBlank() && run.outlineMarkdown.isNotBlank()) {
+            finalResult.copy(markdownNote = run.outlineMarkdown)
+        } else {
+            finalResult
+        }
+
+        val (mergedVideoPath, mergeError) = try {
             onStatus(
                 VideoExecutionStatusUpdate(
                     stage = VideoRunStatus.Summarizing,
@@ -392,11 +787,11 @@ internal class VideoExecutionOrchestrator(
                     templateLabel = task.templateLabel,
                     segmentDurationSeconds = task.plannedSegmentDurationSeconds,
                     captureIntervalSeconds = task.captureIntervalSeconds,
-                    finalSummary = finalResult.summary,
-                    finalConclusion = finalResult.conclusion,
-                    timelineEvents = finalResult.timelineEvents,
+                    finalSummary = finalResultWithFallback.summary,
+                    finalConclusion = finalResultWithFallback.conclusion,
+                    timelineEvents = finalResultWithFallback.timelineEvents,
                     streamingEnabled = streamingOutputEnabled,
-                    streamingBuffer = finalResult.rawResponse,
+                    streamingBuffer = finalResultWithFallback.rawResponse,
                     isRecordingActive = false,
                     isAnalysisActive = false,
                     recordedSegmentCount = recordedSegmentCount.get(),
@@ -409,31 +804,102 @@ internal class VideoExecutionOrchestrator(
                     segmentFeedbacks = segmentFeedbacks.toList()
                 )
             )
-            segmentProcessor.mergeSegmentVideos(
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                mediaAssembler.mergeSegmentVideos(
+                    runId = runId,
+                    task = task,
+                    results = segmentResults,
+                    outputRoot = outputRoot
+                )
+            } to null
+        } catch (e: Exception) {
+            null to e.message
+        }
+        mergedVideoPath?.let {
+            mediaAssembler.recordDerivedVideoAssetBinding(
                 runId = runId,
-                task = task,
-                results = segmentResults,
-                outputRoot = outputRoot
+                filePath = it,
+                assetKind = VideoRemoteAssetKind.MasterVideo
             )
-        } catch (_: Exception) {
-            null
         }
 
+        val masterAudioPath = run.continuousAudioPath
+            ?.takeIf(String::isNotBlank)
+            ?.takeIf { File(it).exists() && File(it).length() > 0L }
+            ?: runCatching {
+                audioOutlineProcessor.buildMasterAudioAsset(
+                    runId = runId,
+                    results = segmentResults,
+                    outputRoot = outputRoot,
+                    expectedDurationMs = recordedDurationSeconds.get() * 1_000L
+                )
+            }.getOrNull()
+        val fullMediaPath = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            mediaAssembler.mergeVideoWithMasterAudio(
+                runId = runId,
+                videoPath = mergedVideoPath,
+                audioPath = masterAudioPath ?: run.continuousAudioPath,
+                outputRoot = outputRoot
+            )
+        }
+
+        val manualStopWithSegments = shouldStopRequested() && recordedSegmentCount.get() > 0
+        val validation = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            mediaAssembler.validateMedia(fullMediaPath ?: mergedVideoPath)
+        }
         try {
+            val finalStatus = if (!manualStopWithSegments && mergedVideoPath != null && validation.errorMessage == null) {
+                VideoRunStatus.Completed
+            } else {
+                VideoRunStatus.CompletedDegraded
+            }
+            val degradedReason = listOfNotNull(
+                if (manualStopWithSegments) "用户手动停止，已基于已记录片段生成总结。" else null,
+                mergeError?.let { "视频合并失败: $it" },
+                validation.errorMessage?.takeIf { mergedVideoPath != null }?.let { "视频校验异常: $it" }
+            ).joinToString("；").ifBlank { null }
+            val robustDegradedReason = listOfNotNull(
+                if (manualStopWithSegments) "Manual stop; generated a partial summary from recorded segments." else null,
+                if (failedAnalysisCount > 0) "$failedAnalysisCount segment analysis failed; summary used successful segments only." else null,
+                mergeError?.let { "Video merge failed: $it" },
+                validation.errorMessage?.takeIf { mergedVideoPath != null }?.let { "Media validation failed: $it" }
+            ).joinToString("; ").ifBlank { null }
             run = run.copy(
-                status = VideoRunStatus.Completed,
-                recordingEndedAt = System.currentTimeMillis(),
-                finalSummary = finalResult.summary,
-                finalConclusion = finalResult.conclusion,
-                rawModelSummary = finalResult.rawResponse,
+                status = finalStatus,
+                recordingEndedAt = run.recordingEndedAt ?: System.currentTimeMillis(),
+                continuousAudioPath = run.continuousAudioPath ?: masterAudioPath,
+                continuousAudioDurationMs = run.continuousAudioDurationMs
+                    .takeIf { it > 0L }
+                    ?: recordedDurationSeconds.get() * 1_000L,
+                finalSummary = finalResultWithFallback.summary,
+                finalConclusion = finalResultWithFallback.conclusion,
+                rawModelSummary = finalResultWithFallback.rawResponse,
+                structuredNoteJson = finalResultWithFallback.structuredNoteJson,
+                markdownNote = finalResultWithFallback.markdownNote,
                 mergedVideoPath = mergedVideoPath,
+                fullMediaPath = fullMediaPath ?: mergedVideoPath,
+                fullMediaDurationMs = validation.durationMs.takeIf { it > 0L }
+                    ?: recordedDurationSeconds.get() * 1_000L,
+                fullMediaHasAudio = validation.hasAudio,
+                fullMediaVideoSource = "split_audio_video_segments",
+                audioEnhancementInfo = segmentResults.firstOrNull { it.audioEnhancementInfo.isNotBlank() }
+                    ?.audioEnhancementInfo.orEmpty(),
                 errorMessage = null,
+                degradedReason = robustDegradedReason ?: degradedReason,
+                mergedSegmentCountActual = successfulSegmentResults.count {
+                    it.analysisInputMode == SegmentAnalysisInputMode.MergedSegmentVideo
+                },
+                segmentsMissingMergedAnalysisAsset = successfulSegmentResults.count {
+                    it.analysisInputMode == SegmentAnalysisInputMode.VideoOnly
+                },
+                audioOutlineAvailable = run.outlineMarkdown.isNotBlank(),
+                reportPipelineStagesJson = pipelineStages.joinToString(",", "[", "]") { "\"$it\"" },
                 updatedAt = System.currentTimeMillis()
             )
             runDao.upsert(run)
             timelineEventDao.deleteByRunId(runId)
             timelineEventDao.insertAll(
-                finalResult.timelineEvents.map { event ->
+                finalResultWithFallback.timelineEvents.map { event ->
                     TimelineEventEntity(
                         runId = runId,
                         timestampSeconds = event.timestampSeconds,
@@ -445,7 +911,7 @@ internal class VideoExecutionOrchestrator(
             )
         } catch (error: Exception) {
             throw VideoProcessException(
-                stage = VideoRunStatus.Completed,
+                stage = run.status,
                 userMessage = "Failed to save the final video result: ${error.toUserMessage("Check the local database state.")}",
                 cause = error
             )
@@ -465,11 +931,11 @@ internal class VideoExecutionOrchestrator(
                 templateLabel = task.templateLabel,
                 segmentDurationSeconds = task.plannedSegmentDurationSeconds,
                 captureIntervalSeconds = task.captureIntervalSeconds,
-                finalSummary = finalResult.summary,
-                finalConclusion = finalResult.conclusion,
-                timelineEvents = finalResult.timelineEvents,
+                finalSummary = finalResultWithFallback.summary,
+                finalConclusion = finalResultWithFallback.conclusion,
+                timelineEvents = finalResultWithFallback.timelineEvents,
                 streamingEnabled = streamingOutputEnabled,
-                streamingBuffer = finalResult.rawResponse,
+                streamingBuffer = finalResultWithFallback.rawResponse,
                 isRecordingActive = false,
                 isAnalysisActive = false,
                 recordedSegmentCount = recordedSegmentCount.get(),
@@ -478,7 +944,7 @@ internal class VideoExecutionOrchestrator(
                 recordedDurationSeconds = recordedDurationSeconds.get(),
                 remainingDurationSeconds = (task.plannedDurationSeconds - nextCaptureOffsetSeconds.get())
                     .coerceAtLeast(0),
-                stopRequested = shouldStopRequested(),
+                stopRequested = false,
                 segmentFeedbacks = segmentFeedbacks.toList()
             )
         )
@@ -499,7 +965,7 @@ internal class VideoExecutionOrchestrator(
         onStatus: suspend (VideoExecutionStatusUpdate) -> Unit
     ) {
         val existingRun = runDao.getRunById(runId) ?: return
-        if (existingRun.status == VideoRunStatus.Cancelled || existingRun.status == VideoRunStatus.Completed) {
+        if (existingRun.status in setOf(VideoRunStatus.Cancelled, VideoRunStatus.Completed, VideoRunStatus.CompletedDegraded)) {
             return
         }
 
@@ -539,7 +1005,7 @@ internal class VideoExecutionOrchestrator(
         onStatus: suspend (VideoExecutionStatusUpdate) -> Unit
     ) {
         val existingRun = runDao.getRunById(runId) ?: return
-        if (existingRun.status == VideoRunStatus.Completed || existingRun.status == VideoRunStatus.Cancelled) {
+        if (existingRun.status in setOf(VideoRunStatus.Completed, VideoRunStatus.CompletedDegraded, VideoRunStatus.Cancelled)) {
             return
         }
 
@@ -567,5 +1033,67 @@ internal class VideoExecutionOrchestrator(
                 activeStreamingSegmentIndex = 0
             )
         )
+    }
+
+    private suspend fun analyzeMergedVideoChunk(
+        runId: Long,
+        task: VideoProcessTaskDraft,
+        chunkFile: File,
+        chunkIndex: Int,
+        chunkCount: Int
+    ): VideoMergedChunkResult {
+        return try {
+            val remoteFile = remoteFileResolver.resolveVideoFile(
+                file = chunkFile,
+                runId = runId,
+                segmentRunId = null,
+                assetKind = VideoRemoteAssetKind.MergedChunkVideo,
+                samplingFps = task.plannedSamplingFps
+            )
+            // Poll until file is ready
+            repeat(150) { attempt ->
+                val status = remoteFileResolver.pollFileStatus(remoteFile.fileId)
+                when {
+                    status == "active" || status == "processed" || status == "ready" || status == "succeeded" -> {
+                        return@repeat
+                    }
+                    status == "failed" -> error("Ark file preprocessing failed for chunk $chunkIndex.")
+                    else -> {
+                        kotlinx.coroutines.delay(2_000L)
+                        if (attempt == 149) error("Ark file preprocessing timed out for chunk $chunkIndex.")
+                    }
+                }
+            }
+            val rawText = chunkAnalyzer.analyze(
+                fileId = remoteFile.fileId,
+                task = task,
+                chunkIndex = chunkIndex,
+                chunkCount = chunkCount
+            )
+            val parsed = ModelOutputParser.parseVideoAnalysis(rawText)
+            VideoMergedChunkResult(
+                chunkIndex = chunkIndex,
+                filePath = chunkFile.absolutePath,
+                fileSizeBytes = chunkFile.length(),
+                arkFileId = remoteFile.fileId,
+                evidenceJson = parsed.evidenceJson.ifBlank { rawText },
+                summary = parsed.summary.ifBlank { parsed.conclusion }
+            )
+        } catch (error: Exception) {
+            VideoMergedChunkResult(
+                chunkIndex = chunkIndex,
+                filePath = chunkFile.absolutePath,
+                fileSizeBytes = chunkFile.length(),
+                arkFileId = null,
+                evidenceJson = "",
+                summary = "",
+                errorMessage = error.toUserMessage("Merged video chunk analysis failed.")
+            )
+        }
+    }
+
+    private companion object {
+        private const val ANALYSIS_PARALLELISM = 2
+        private const val STOP_POLL_INTERVAL_MS = 250L
     }
 }

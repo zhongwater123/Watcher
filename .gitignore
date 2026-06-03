@@ -29,4 +29,9 @@ local.properties
 /.gradle-local
 /app/release
 *.litertlm
+*.task
 release-publish/*.apk
+app.zip
+app (5).zip
+*.mp4
+watcher-video-*-debug-*.json

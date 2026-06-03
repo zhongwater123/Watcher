@@ -52,6 +52,7 @@ High-level structure:
 - `app/src/main/java/com/example/watcher/ui/components`
 - `app/src/main/java/com/example/watcher/ui/screens`
 - `app/src/main/java/com/example/watcher/ui/viewmodel`
+- `mcp` for the zero-build desktop MCP server and gateway tool adapter
 
 Tests:
 

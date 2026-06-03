@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -27,8 +28,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.watcher.data.model.TimelineEventEntity
+import com.example.watcher.data.model.RecordingScenario
 import com.example.watcher.data.model.VideoProcessRun
 import com.example.watcher.data.model.VideoProcessTask
 import com.example.watcher.data.model.VideoProcessTaskDraft
@@ -121,10 +124,15 @@ internal fun VideoAnalysisWorkbenchPage(
     var finalSummaryPrompt by remember(currentTask?.taskId, currentTask?.finalSummaryPrompt) {
         mutableStateOf(currentTask?.finalSummaryPrompt.orEmpty())
     }
+    var recordingScenario by remember(currentTask?.taskId, currentTask?.recordingScenario) {
+        mutableStateOf(currentTask?.recordingScenario ?: RecordingScenario.General.value)
+    }
 
     val editedTask = currentTask?.copy(
         title = title,
         userRequirement = requirement,
+        recordingScenario = recordingScenario,
+        speechInputEnabled = false,
         plannedDurationSeconds = duration.toIntOrNull() ?: currentTask.plannedDurationSeconds,
         plannedSamplingFps = samplingFps.toIntOrNull() ?: currentTask.plannedSamplingFps,
         plannedSegmentDurationSeconds = segmentDuration.toIntOrNull()
@@ -190,6 +198,7 @@ internal fun VideoAnalysisWorkbenchPage(
                 isListening = isListening,
                 currentTask = currentTask,
                 editedTask = editedTask,
+                status = status,
                 title = title,
                 requirement = requirement,
                 duration = duration,
@@ -198,6 +207,7 @@ internal fun VideoAnalysisWorkbenchPage(
                 captureInterval = captureInterval,
                 segmentAnalysisPrompt = segmentAnalysisPrompt,
                 finalSummaryPrompt = finalSummaryPrompt,
+                recordingScenario = recordingScenario,
                 onTitleChange = { title = it },
                 onRequirementChange = { requirement = it },
                 onDurationChange = { duration = it.filter(Char::isDigit) },
@@ -206,6 +216,7 @@ internal fun VideoAnalysisWorkbenchPage(
                 onCaptureIntervalChange = { captureInterval = it.filter(Char::isDigit) },
                 onSegmentAnalysisPromptChange = { segmentAnalysisPrompt = it },
                 onFinalSummaryPromptChange = { finalSummaryPrompt = it },
+                onRecordingScenarioChange = { recordingScenario = it },
                 onResetSegmentAnalysisPrompt = {
                     segmentAnalysisPrompt = VideoProcessTaskDraft.buildFallbackSegmentAnalysisPrompt(
                         userRequirement = requirement,
@@ -332,6 +343,7 @@ private fun VideoGuideCard(
     isListening: Boolean,
     currentTask: VideoProcessTaskDraft?,
     editedTask: VideoProcessTaskDraft?,
+    status: VideoProcessingStatus,
     title: String,
     requirement: String,
     duration: String,
@@ -340,6 +352,7 @@ private fun VideoGuideCard(
     captureInterval: String,
     segmentAnalysisPrompt: String,
     finalSummaryPrompt: String,
+    recordingScenario: String,
     onTitleChange: (String) -> Unit,
     onRequirementChange: (String) -> Unit,
     onDurationChange: (String) -> Unit,
@@ -348,6 +361,7 @@ private fun VideoGuideCard(
     onCaptureIntervalChange: (String) -> Unit,
     onSegmentAnalysisPromptChange: (String) -> Unit,
     onFinalSummaryPromptChange: (String) -> Unit,
+    onRecordingScenarioChange: (String) -> Unit,
     onResetSegmentAnalysisPrompt: () -> Unit,
     onResetFinalSummaryPrompt: () -> Unit,
     onRequestTextChange: (TextFieldValue) -> Unit,
@@ -422,6 +436,74 @@ private fun VideoGuideCard(
                         )
                     }
 
+                    Text(
+                        text = "记录场景",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        RecordingScenario.entries.forEach { scenario ->
+                            TextButton(onClick = { onRecordingScenarioChange(scenario.value) }) {
+                                Text(
+                                    text = if (recordingScenario == scenario.value) {
+                                        "✓ ${scenario.label} · ${scenario.outputFocus}"
+                                    } else {
+                                        "${scenario.label} · ${scenario.outputFocus}"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                        }
+                    }
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Text("全帧率音画录制", style = MaterialTheme.typography.labelLarge)
+                        Text(
+                            text = "录制器以源帧率(≈30fps)写入完整音画分片；上传分析时按抽帧密度取样，音轨完整保留供模型多模态理解。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        if (status.isBusy || status.segmentAudioResults.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                            ) {
+                                val micColor = if (status.micPermissionGranted)
+                                    MaterialTheme.colorScheme.primary
+                                else
+                                    MaterialTheme.colorScheme.error
+                                val micLabel = if (status.micPermissionGranted) "麦克风已授权" else "麦克风未授权"
+                                Text(
+                                    text = micLabel,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = micColor
+                                )
+                                if (status.isRecordingActive) {
+                                    val audioLabel = if (status.currentSegmentHasAudio) "音频: 录入中" else "音频: 未录入"
+                                    Text(
+                                        text = audioLabel,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            if (status.segmentAudioResults.isNotEmpty()) {
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    status.segmentAudioResults.forEachIndexed { index, hasAudio ->
+                                        Text(
+                                            text = if (hasAudio) "S${index + 1}:有音频" else "S${index + 1}:无音频",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = if (hasAudio)
+                                                MaterialTheme.colorScheme.primary
+                                            else
+                                                MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
                     FormField(label = "任务标题", value = title, onValueChange = onTitleChange)
                     FormField(label = "分析目标", value = requirement, onValueChange = onRequirementChange)
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -493,9 +575,9 @@ private fun VideoGuideCard(
                         }
                     }
                     ActionRow(
-                        primaryLabel = "保存任务",
+                        primaryLabel = if (status.isTaskSaving) "保存中" else "保存任务",
                         onPrimaryClick = onSaveTask,
-                        primaryEnabled = true,
+                        primaryEnabled = !status.isTaskSaving,
                         secondaryLabel = "复制 JSON",
                         onSecondaryClick = onCopyJson,
                         secondaryEnabled = true,
@@ -623,6 +705,28 @@ private fun VideoResultCard(
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    if (status.speechInputEnabled) {
+                        Text(
+                            text = status.speechErrorMessage
+                                ?: if (status.isSpeechListening) "语音识别中，最近转写会参与分片分析。"
+                                else "语音输入已开启，等待识别结果。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (status.speechErrorMessage != null) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
+                        status.recentSpeech.take(3).forEach { transcript ->
+                            Text(
+                                text = transcript.text,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
                     if ((editedTask ?: currentTask) != null) {
                         Text(
                             text = buildVideoRhythmSummary(
@@ -669,9 +773,9 @@ private fun VideoResultCard(
                     primaryLabel = "启动视频分析",
                     onPrimaryClick = { editedTask?.let(onStartProcessing) },
                     primaryEnabled = editedTask != null,
-                    secondaryLabel = "仅保存计划",
+                    secondaryLabel = if (status.isTaskSaving) "保存中" else "仅保存计划",
                     onSecondaryClick = { editedTask?.let(onSaveTask) },
-                    secondaryEnabled = editedTask != null,
+                    secondaryEnabled = editedTask != null && !status.isTaskSaving,
                     secondaryIcon = Icons.Default.Tune
                 )
             }

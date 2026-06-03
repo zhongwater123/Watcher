@@ -5,6 +5,7 @@ import com.example.watcher.data.model.CheckResult
 import com.example.watcher.data.model.IntentResult
 import com.example.watcher.data.model.MonitorDecision
 import com.example.watcher.data.model.MonitorMode
+import com.example.watcher.data.model.RecordingScenario
 import com.example.watcher.data.model.TargetTrigger
 import com.example.watcher.data.model.VideoAnalysisResult
 import com.example.watcher.data.model.VideoProcessTaskDraft
@@ -13,6 +14,7 @@ import com.example.watcher.data.model.VideoTaskPlan
 import com.example.watcher.data.model.VideoTimelineEvent
 import com.google.gson.Gson
 import com.google.gson.JsonElement
+import com.google.gson.JsonObject
 import com.google.gson.JsonSyntaxException
 import com.google.gson.annotations.SerializedName
 import kotlin.math.roundToInt
@@ -141,7 +143,7 @@ object ModelOutputParser {
             ?: payload?.recordingDurationSeconds
             ?: baseline.recordingDurationSeconds
         val segmentDurationSeconds = payload?.segmentDurationSeconds ?: baseline.segmentDurationSeconds
-        val captureIntervalSeconds = payload?.captureIntervalSeconds ?: baseline.captureIntervalSeconds
+        val captureIntervalSeconds = segmentDurationSeconds
         val samplingFps = payload?.samplingFps ?: baseline.samplingFps
 
         val draft = VideoProcessTaskDraft(
@@ -160,6 +162,12 @@ object ModelOutputParser {
             sceneContext = payload?.sceneContext.orEmpty(),
             segmentAnalysisPrompt = payload?.segmentAnalysisPrompt.orEmpty(),
             finalSummaryPrompt = payload?.finalSummaryPrompt.orEmpty(),
+            recordingScenario = inferRecordingScenario(
+                modelValue = payload?.recordingScenario,
+                userInput = userInput,
+                userRequirement = payload?.userRequirement
+            ).value,
+            speechInputEnabled = payload?.speechInputEnabled ?: false,
             plannedDurationSeconds = durationSeconds,
             plannedSamplingFps = samplingFps,
             plannedSegmentDurationSeconds = segmentDurationSeconds,
@@ -192,6 +200,8 @@ object ModelOutputParser {
             segmentCount = draft.plannedSegmentCount,
             segmentAnalysisPrompt = draft.segmentAnalysisPrompt,
             finalSummaryPrompt = draft.finalSummaryPrompt,
+            recordingScenario = draft.recordingScenario,
+            speechInputEnabled = draft.speechInputEnabled,
             autoStartStreamingOutput = draft.autoStartStreamingOutput,
             finalSummaryEnabled = draft.finalSummaryEnabled,
             confirmationNotes = draft.confirmationNotes
@@ -199,6 +209,15 @@ object ModelOutputParser {
     }
 
     fun parseVideoAnalysis(rawText: String): VideoAnalysisResult {
+        parseVideoAnalysisObject(rawText)?.let { root ->
+            if (root.hasAny(FINAL_REPORT_KEYS)) {
+                return parseFinalVideoReport(root, rawText)
+            }
+            if (root.hasAny(SEGMENT_FACT_KEYS)) {
+                return parseSegmentFactPacket(root, rawText)
+            }
+        }
+
         val payload = tryParse<VideoAnalysisPayload>(rawText)
 
         if (payload != null) {
@@ -211,7 +230,7 @@ object ModelOutputParser {
                     val title = event.title?.trim().takeUnless { it.isNullOrBlank() }
                         ?: return@mapNotNull null
                     VideoTimelineEvent(
-                        timestampSeconds = (event.timestampSeconds ?: 0).coerceAtLeast(0),
+                        timestampSeconds = parseTimestampSeconds(event.timestampSeconds),
                         title = title,
                         detail = event.detail?.trim().orEmpty(),
                         confidence = parseConfidenceValue(event.confidence)
@@ -223,16 +242,212 @@ object ModelOutputParser {
                 summary = summary,
                 conclusion = conclusion,
                 timelineEvents = timeline,
-                rawResponse = rawText
+                rawResponse = rawText,
+                structuredNoteJson = payload.structuredNote?.let { gson.toJson(it) }.orEmpty(),
+                markdownNote = payload.markdownNote?.trim().orEmpty(),
+                evidenceJson = gson.toJson(payload.toEvidencePackage())
             )
         }
 
         return VideoAnalysisResult(
-            summary = rawText.trim().take(120).ifBlank { "模型响应无法解析" },
-            conclusion = "视频结果未能按约定结构返回。",
+            summary = "",
+            conclusion = "",
             timelineEvents = emptyList(),
             rawResponse = rawText
         )
+    }
+
+    private fun parseVideoAnalysisObject(rawText: String): JsonObject? {
+        return runCatching {
+            gson.fromJson(extractJson(rawText), JsonObject::class.java)
+        }.getOrNull()
+    }
+
+    private fun parseSegmentFactPacket(root: JsonObject, rawText: String): VideoAnalysisResult {
+        val timeline = extractTimeline(root, "timelineFacts", "timelineEvents")
+        val segmentTopic = root.firstString("segmentTopic", "topic")
+        val fallbackSummary = timeline.firstOrNull()?.title
+            ?: root.extractTextList("speechKeyPoints").firstOrNull()
+            ?: root.extractTextList("audioFacts").firstOrNull()
+            ?: root.extractTextList("visualFacts").firstOrNull()
+        val evidencePackage = root.deepCopy().asJsonObject.apply {
+            addProperty("schemaVersion", SEGMENT_FACT_SCHEMA_VERSION)
+        }
+
+        return VideoAnalysisResult(
+            summary = firstUsefulText(segmentTopic, fallbackSummary),
+            conclusion = "",
+            timelineEvents = timeline,
+            rawResponse = rawText,
+            evidenceJson = gson.toJson(evidencePackage)
+        )
+    }
+
+    private fun parseFinalVideoReport(root: JsonObject, rawText: String): VideoAnalysisResult {
+        val keyConclusions = root.extractTextList("keyConclusions", "conclusions")
+        val summary = firstUsefulText(
+            root.firstString("briefSummary", "summary", "overview"),
+            root.findObject("structuredNotes", "structuredNote")?.firstString("overview", "summary")
+        )
+        val conclusion = firstUsefulText(
+            root.firstString("conclusion", "finalConclusion"),
+            keyConclusions.joinToString("\n")
+        )
+        val reportPackage = root.deepCopy().asJsonObject.apply {
+            addProperty("schemaVersion", FINAL_REPORT_SCHEMA_VERSION)
+        }
+
+        return VideoAnalysisResult(
+            summary = summary,
+            conclusion = conclusion,
+            timelineEvents = extractTimeline(root, "timeline", "timelineEvents"),
+            rawResponse = rawText,
+            structuredNoteJson = gson.toJson(reportPackage),
+            markdownNote = buildFinalReportMarkdown(root)
+        )
+    }
+
+    private fun buildFinalReportMarkdown(root: JsonObject): String {
+        val title = root.firstString("title").orEmpty().ifBlank { "Video Analysis Report" }
+        val reportType = root.firstString("reportType").orEmpty()
+        val isObservationReport = reportType == "scene_observation" || reportType == "general_record"
+        val summary = firstUsefulText(
+            root.firstString("briefSummary", "summary", "overview"),
+            root.findObject("structuredNotes", "structuredNote")?.firstString("overview", "summary")
+        )
+        val keyConclusions = root.extractTextList("keyConclusions", "conclusions")
+        val outline = root.extractTextList("outline").map(::normalizeReportListItem).filterNot(::isPlaceholderReportItem)
+        val knowledgePoints = if (isObservationReport) {
+            emptyList()
+        } else {
+            root.extractTextList("knowledgePoints", "keyPoints")
+                .map(::normalizeReportListItem)
+                .filterNot(::isPlaceholderReportItem)
+                .filterNot(::isCoverageOrQualityNote)
+        }
+        val reviewItems = root.extractTextList("reviewOrActionItems", "actionItems", "followUps")
+            .map(::normalizeReportListItem)
+            .filterNot(::isPlaceholderReportItem)
+            .filterNot(::isCoverageOrQualityNote)
+        val evidence = root.extractTextList("evidenceHighlights")
+        val coverageNotice = root.firstString("coverageNotice")
+
+        return buildString {
+            appendLine("# $title")
+            if (summary.isNotBlank()) {
+                appendLine()
+                appendLine(summary)
+            }
+            appendMarkdownList(if (isObservationReport) "Key Findings" else "Key Conclusions", keyConclusions)
+            appendMarkdownList(if (isObservationReport) "Event Flow" else "Structured Outline", outline)
+            if (!isObservationReport) {
+                appendMarkdownList("Knowledge Points", knowledgePoints)
+            }
+            appendMarkdownList(if (isObservationReport) "Follow-ups" else "Review / Action Items", reviewItems)
+            appendMarkdownList("Evidence Highlights", evidence)
+            coverageNotice?.takeIf(String::isNotBlank)?.let {
+                appendLine()
+                appendLine(if (isObservationReport) "## Recording Notes" else "## Coverage Notice")
+                appendLine(it)
+            }
+        }.trim()
+    }
+
+    private fun StringBuilder.appendMarkdownList(title: String, items: List<String>) {
+        if (items.isEmpty()) return
+        appendLine()
+        appendLine("## $title")
+        items.forEach { item -> appendLine("- $item") }
+    }
+
+    private fun normalizeReportListItem(text: String): String {
+        return text.trim()
+            .replace(Regex("""^\s*(?:\d+|[一二三四五六七八九十]+)[\.\)、:：\s]+"""), "")
+            .replace(Regex("""^\s*\d{2}(?=\S)"""), "")
+            .trim()
+    }
+
+    private fun isPlaceholderReportItem(text: String): Boolean {
+        val compact = normalizeReportListItem(text).trim().trim('-', '*', '_', '.', '、', ':', '：')
+        if (compact.isBlank()) return true
+        if (compact.matches(Regex("""\d{1,2}"""))) return true
+        return compact.matches(Regex("""[一二三四五六七八九十]{1,3}"""))
+    }
+
+    private fun isCoverageOrQualityNote(text: String): Boolean {
+        val value = text.trim()
+        return listOf("收音", "语音", "音量", "画质", "清晰", "拍摄角度", "无法识别", "未覆盖", "设备", "底噪")
+            .any { value.contains(it, ignoreCase = true) }
+    }
+
+    private fun firstUsefulText(vararg values: String?): String {
+        return values.firstOrNull { !it.isNullOrBlank() }?.trim().orEmpty()
+    }
+
+    private fun JsonObject.hasAny(keys: Set<String>): Boolean {
+        return keys.any(::has)
+    }
+
+    private fun JsonObject.firstString(vararg keys: String): String? {
+        for (key in keys) {
+            val value = get(key) ?: continue
+            if (value.isJsonPrimitive) {
+                val text = runCatching { value.asString }.getOrNull()?.trim()
+                if (!text.isNullOrBlank()) return text
+            }
+        }
+        return null
+    }
+
+    private fun JsonObject.findObject(vararg keys: String): JsonObject? {
+        for (key in keys) {
+            val value = get(key) ?: continue
+            if (value.isJsonObject) return value.asJsonObject
+        }
+        return null
+    }
+
+    private fun JsonObject.extractTextList(vararg keys: String): List<String> {
+        val values = keys.firstNotNullOfOrNull { key ->
+            get(key)?.takeIf { !it.isJsonNull }
+        } ?: return emptyList()
+        return when {
+            values.isJsonArray -> values.asJsonArray.mapNotNull { item ->
+                when {
+                    item.isJsonPrimitive -> runCatching { item.asString }.getOrNull()
+                    item.isJsonObject -> item.asJsonObject.firstString(
+                        "text",
+                        "content",
+                        "title",
+                        "detail",
+                        "relevance"
+                    ) ?: gson.toJson(item)
+                    else -> null
+                }?.trim()?.takeIf(String::isNotBlank)
+            }
+            values.isJsonPrimitive -> listOfNotNull(runCatching { values.asString }.getOrNull()?.trim())
+                .filter(String::isNotBlank)
+            values.isJsonObject -> listOf(gson.toJson(values))
+            else -> emptyList()
+        }
+    }
+
+    private fun extractTimeline(root: JsonObject, vararg keys: String): List<VideoTimelineEvent> {
+        val array = keys.firstNotNullOfOrNull { key ->
+            root.get(key)?.takeIf { it.isJsonArray }?.asJsonArray
+        } ?: return emptyList()
+        return array.mapNotNull { item ->
+            val obj = item.takeIf { it.isJsonObject }?.asJsonObject ?: return@mapNotNull null
+            val title = obj.firstString("title", "event", "text", "content") ?: return@mapNotNull null
+            VideoTimelineEvent(
+                timestampSeconds = parseTimestampSeconds(
+                    obj.get("timestampSeconds") ?: obj.get("time") ?: obj.get("startSeconds")
+                ),
+                title = title,
+                detail = obj.firstString("detail", "description", "text", "content").orEmpty(),
+                confidence = parseConfidenceValue(obj.get("confidence"))
+            )
+        }.sortedBy { it.timestampSeconds }
     }
 
     fun fractionToPercent(value: Float): Int {
@@ -279,6 +494,16 @@ object ModelOutputParser {
             else -> return null
         }
         return normalized.toFloat().coerceIn(0f, 1f)
+    }
+
+    private fun parseTimestampSeconds(raw: JsonElement?): Int {
+        if (raw == null || raw.isJsonNull) return 0
+        val text = runCatching { raw.asString }.getOrNull()?.trim().orEmpty()
+        if (text.isBlank()) return 0
+        text.toIntOrNull()?.let { return it.coerceAtLeast(0) }
+
+        val firstNumber = Regex("""\d+""").find(text)?.value?.toIntOrNull()
+        return firstNumber?.coerceAtLeast(0) ?: 0
     }
 
     private inline fun <reified T> tryParse(rawText: String): T? {
@@ -350,20 +575,15 @@ object ModelOutputParser {
             VideoTaskCategory.ContinuousWatch -> VideoPlanningBaseline(
                 recordingDurationSeconds = safeDuration,
                 samplingFps = if (safeDuration <= 300) 2 else 1,
-                segmentDurationSeconds = 10,
-                captureIntervalSeconds = 10
+                segmentDurationSeconds = safeDuration.coerceAtMost(60),
+                captureIntervalSeconds = safeDuration.coerceAtMost(60)
             )
 
             VideoTaskCategory.LongHorizonSummary -> VideoPlanningBaseline(
                 recordingDurationSeconds = safeDuration,
                 samplingFps = 1,
-                segmentDurationSeconds = 10,
-                captureIntervalSeconds = when {
-                    safeDuration >= 7_200 -> 60
-                    safeDuration >= 3_600 -> 45
-                    safeDuration >= 1_800 -> 30
-                    else -> 20
-                }
+                segmentDurationSeconds = safeDuration.coerceAtMost(60),
+                captureIntervalSeconds = safeDuration.coerceAtMost(60)
             )
         }
     }
@@ -386,6 +606,31 @@ object ModelOutputParser {
                 "这是短时高密度观察任务，建议提高切片密度以尽快给出反馈，当前节奏为 $rhythm。"
         } + " 总观察时长约 ${durationSeconds} 秒。"
     }
+
+    private fun inferRecordingScenario(
+        modelValue: String?,
+        userInput: String,
+        userRequirement: String?
+    ): RecordingScenario {
+        val modelScenario = RecordingScenario.fromValue(modelValue)
+        if (modelScenario != RecordingScenario.General) return modelScenario
+
+        val combined = "$userInput ${userRequirement.orEmpty()}".lowercase()
+        return when {
+            combined.containsAny("访谈", "采访", "interview", "座谈", "对话", "问答") ->
+                RecordingScenario.Interview
+            combined.containsAny("课", "讲座", "讲课", "lecture", "class", "授课", "上课") ->
+                RecordingScenario.ClassLecture
+            combined.containsAny("会议", "meeting", "例会", "周会", "开会", "汇报") ->
+                RecordingScenario.Meeting
+            combined.containsAny("培训", "training", "教学", "操作演示") ->
+                RecordingScenario.Training
+            else -> RecordingScenario.General
+        }
+    }
+
+    private fun String.containsAny(vararg keywords: String): Boolean =
+        keywords.any { contains(it, ignoreCase = true) }
 
     private fun defaultConfirmationNotes(
         category: VideoTaskCategory,
@@ -654,7 +899,11 @@ object ModelOutputParser {
         @SerializedName(value = "autoStartStreamingOutput", alternate = ["streamingEnabled"])
         val autoStartStreamingOutput: Boolean? = null,
         @SerializedName(value = "finalSummaryEnabled")
-        val finalSummaryEnabled: Boolean? = null
+        val finalSummaryEnabled: Boolean? = null,
+        @SerializedName(value = "recordingScenario", alternate = ["scenario", "recording_scene"])
+        val recordingScenario: String? = null,
+        @SerializedName(value = "speechInputEnabled", alternate = ["speechEnabled", "asrEnabled"])
+        val speechInputEnabled: Boolean? = null
     )
 
     private data class VideoAnalysisPayload(
@@ -663,12 +912,35 @@ object ModelOutputParser {
         @SerializedName(value = "conclusion", alternate = ["结论"])
         val conclusion: String? = null,
         @SerializedName(value = "timelineEvents", alternate = ["时间线事件"])
-        val timelineEvents: List<VideoAnalysisEventPayload>? = null
+        val timelineEvents: List<VideoAnalysisEventPayload>? = null,
+        @SerializedName(value = "structuredNote", alternate = ["note", "recordNote", "结构化记录"])
+        val structuredNote: JsonElement? = null,
+        val markdownNote: String? = null,
+        val segmentTopic: String? = null,
+        val audioTranscriptExtracts: JsonElement? = null,
+        val speechKeyPoints: JsonElement? = null,
+        val visualEvidence: JsonElement? = null,
+        val screenOrBoardContent: JsonElement? = null,
+        val demonstrations: JsonElement? = null,
+        val uncertainties: JsonElement? = null
     )
+
+    private fun VideoAnalysisPayload.toEvidencePackage(): Map<String, JsonElement?> {
+        return mapOf(
+            "segmentTopic" to segmentTopic?.let { gson.toJsonTree(it) },
+            "audioTranscriptExtracts" to audioTranscriptExtracts,
+            "speechKeyPoints" to speechKeyPoints,
+            "visualEvidence" to visualEvidence,
+            "screenOrBoardContent" to screenOrBoardContent,
+            "demonstrations" to demonstrations,
+            "timelineEvents" to timelineEvents?.let { gson.toJsonTree(it) },
+            "uncertainties" to uncertainties
+        ).filterValues { it != null }
+    }
 
     private data class VideoAnalysisEventPayload(
         @SerializedName(value = "timestampSeconds", alternate = ["time", "时间戳秒数"])
-        val timestampSeconds: Int? = null,
+        val timestampSeconds: JsonElement? = null,
         @SerializedName(value = "title", alternate = ["事件"])
         val title: String? = null,
         @SerializedName(value = "detail", alternate = ["说明", "detailText"])
@@ -686,6 +958,27 @@ object ModelOutputParser {
 
     private val SUMMARY_KEYWORDS = listOf("干了什么", "都做了什么", "总结", "回顾", "复盘")
     private val ALERT_KEYWORDS = listOf("异常", "危险", "告警", "报警", "问题", "摔倒")
+    private const val SEGMENT_FACT_SCHEMA_VERSION = "video_segment_fact_packet_v1"
+    private const val FINAL_REPORT_SCHEMA_VERSION = "video_final_report_v1"
+    private val SEGMENT_FACT_KEYS = setOf(
+        "segmentTopic",
+        "audioFacts",
+        "visualFacts",
+        "screenOrBoardFacts",
+        "demonstrationFacts",
+        "timelineFacts",
+        "quality"
+    )
+    private val FINAL_REPORT_KEYS = setOf(
+        "briefSummary",
+        "reportType",
+        "keyConclusions",
+        "structuredNotes",
+        "knowledgePoints",
+        "reviewOrActionItems",
+        "evidenceHighlights",
+        "coverageNotice"
+    )
     private val CHINESE_DIGIT_MAP = mapOf(
         "零" to 0.0,
         "一" to 1.0,

@@ -3,31 +3,28 @@ package com.example.watcher.data.gateway
 import android.graphics.Bitmap
 import android.util.Log
 import com.example.watcher.agentframework.autonomy.SignalChannel
+import com.example.watcher.agentframework.core.AgentMemoryScope
 import com.example.watcher.agentframework.service.AgentFrameworkService
 import com.example.watcher.agentframework.service.AgentKnowledgeSeed
 import com.example.watcher.agentframework.service.AgentMemorySeed
 import com.example.watcher.agentframework.service.AgentSignalSeed
 import com.example.watcher.agentframework.service.AutonomousAgentStartRequest
-import com.example.watcher.agentframework.core.AgentMemoryScope
 import fi.iki.elonen.NanoHTTPD
 import java.io.ByteArrayInputStream
 import kotlinx.coroutines.runBlocking
 
 /**
  * Embedded HTTP server exposing Watcher capabilities to LAN clients.
- *
- * Usage:
- *   val server = GatewayServer(port = 8080, apiKey = "xxx", frameProvider = { ... })
- *   server.start()
- *   // ... later
- *   server.stop()
  */
-class GatewayServer(
+internal class GatewayServer(
     port: Int = DEFAULT_PORT,
     private val apiKey: String,
     private val localIpProvider: () -> String,
     private val frameProvider: () -> Bitmap?,
     private val taskManager: GatewayTaskManager,
+    private val automationManager: GatewayAutomationManager? = null,
+    private val gatewayStatusProvider: (() -> Map<String, Any?>)? = null,
+    private val onRequestObserved: ((String, String) -> Unit)? = null,
     private val agentService: AgentFrameworkService? = null,
     private val commentaryStateProvider: (() -> Any)? = null,
     private val commentaryEntriesProvider: ((since: Long) -> List<Any>)? = null,
@@ -49,22 +46,41 @@ class GatewayServer(
         val method = session.method
         val uri = session.uri.trimEnd('/')
         Log.d(TAG, "$method $uri")
+        onRequestObserved?.invoke(method.name, uri)
 
-        // CORS headers for browser-based agents
         if (method == Method.OPTIONS) {
             return corsResponse(newFixedLengthResponse(Response.Status.OK, MIME_PLAINTEXT, ""))
         }
 
-        // Health check — no auth required
         if (uri == "/api/health" && method == Method.GET) {
-            return jsonResponse(GatewayRoutes.ok(GatewayRoutes.health(frameProvider() != null)))
+            return ok(
+                GatewayRoutes.health(
+                    hasFrame = frameProvider() != null,
+                    agentConfigured = agentService != null,
+                    commentaryConfigured = commentaryStateProvider != null &&
+                        commentaryEntriesProvider != null &&
+                        onCommentaryAsk != null,
+                    streamManagementConfigured = streamStatusProvider != null &&
+                        onStreamHandoff != null &&
+                        onStreamReclaim != null &&
+                        onStreamRelease != null,
+                    gateway = gatewayStatusProvider?.invoke()
+                )
+            )
         }
 
-        // Auth check for all other /api/ routes
-        if (uri.startsWith("/api/") && apiKey.isNotBlank()) {
-            val provided = session.headers["x-api-key"] ?: session.parms["api_key"]
-            if (provided != apiKey) {
-                return jsonResponse(GatewayRoutes.error("Invalid or missing API key"), Response.Status.UNAUTHORIZED)
+        if (uri == "/api/device/identity" && method == Method.GET) {
+            val manager = automationManager ?: return notImplemented("Automation manager not configured")
+            return ok(manager.deviceIdentity())
+        }
+
+        if (requiresApiAuthentication(uri) && apiKey.isNotBlank()) {
+            if (!isAuthorized(session, uri)) {
+                return error(
+                    status = Response.Status.UNAUTHORIZED,
+                    message = unauthorizedMessage(uri),
+                    errorCode = unauthorizedCode(uri)
+                )
             }
         }
 
@@ -72,269 +88,342 @@ class GatewayServer(
             route(method, uri, session)
         } catch (e: Exception) {
             Log.e(TAG, "Error handling $method $uri", e)
-            jsonResponse(GatewayRoutes.error(e.message ?: "Internal error"), Response.Status.INTERNAL_ERROR)
+            error(
+                status = Response.Status.INTERNAL_ERROR,
+                message = e.message ?: "Internal error",
+                errorCode = GatewayRoutes.ERROR_INTERNAL,
+                retryable = true
+            )
         }
     }
 
     private fun route(method: Method, uri: String, session: IHTTPSession): Response = when {
-        // Capabilities
         method == Method.GET && uri == "/api/capabilities" ->
-            jsonResponse(GatewayRoutes.toJson(GatewayRoutes.capabilities(baseUrl)))
+            ok(GatewayRoutes.capabilities(baseUrl))
 
-        // Snapshot
-        method == Method.GET && uri == "/api/stream/snapshot" -> {
-            val result = GatewayRoutes.snapshot(frameProvider)
-            if (result != null) {
-                corsResponse(newFixedLengthResponse(Response.Status.OK, result.mimeType, ByteArrayInputStream(result.bytes), result.bytes.size.toLong()))
-            } else {
-                jsonResponse(GatewayRoutes.error("No frame available — stream may not be connected"), Response.Status.SERVICE_UNAVAILABLE)
-            }
+        method == Method.POST && uri == "/api/device/pair" -> pairDevice(session)
+
+        method == Method.GET && uri == "/api/stream/snapshot" -> snapshotResponse()
+
+        method == Method.POST && uri == "/api/tasks" -> createTask(session)
+
+        method == Method.GET && uri == "/api/tasks" -> {
+            val tasks = taskManager.listTasks()
+            ok(tasks, meta = GatewayMeta(count = tasks.size))
         }
 
-        // Create task
-        method == Method.POST && uri == "/api/tasks" -> {
-            val body = readBody(session)
-            val params = GatewayRoutes.parseBody(body)
-            val tool = params["tool"] as? String
-            if (tool.isNullOrBlank()) {
-                jsonResponse(GatewayRoutes.error("Missing required field: tool"), Response.Status.BAD_REQUEST)
-            } else {
-                val task = taskManager.createTask(tool, params - "tool")
-                jsonResponse(GatewayRoutes.ok(task), Response.Status.CREATED)
-            }
-        }
+        method == Method.GET && uri.matches(Regex("/api/tasks/[^/]+")) -> getTask(uri)
 
-        // List tasks
-        method == Method.GET && uri == "/api/tasks" ->
-            jsonResponse(GatewayRoutes.ok(taskManager.listTasks()))
+        method == Method.GET && uri.matches(Regex("/api/tasks/[^/]+/snapshot")) -> getTaskSnapshot(uri)
 
-        // Get task by ID
-        method == Method.GET && uri.matches(Regex("/api/tasks/[^/]+")) -> {
-            val taskId = uri.removePrefix("/api/tasks/")
-            val task = taskManager.getTask(taskId)
-            if (task != null) jsonResponse(GatewayRoutes.ok(task))
-            else jsonResponse(GatewayRoutes.error("Task not found: $taskId"), Response.Status.NOT_FOUND)
-        }
+        method == Method.GET && uri.matches(Regex("/api/tasks/[^/]+/events")) -> getTaskEvents(uri, session)
 
-        // Get task snapshot (current frame for a running monitor task)
-        method == Method.GET && uri.matches(Regex("/api/tasks/[^/]+/snapshot")) -> {
-            val taskId = uri.removePrefix("/api/tasks/").removeSuffix("/snapshot")
-            val task = taskManager.getTask(taskId)
-            if (task == null) {
-                jsonResponse(GatewayRoutes.error("Task not found: $taskId"), Response.Status.NOT_FOUND)
-            } else if (task.status != GatewayTaskStatus.Running) {
-                jsonResponse(GatewayRoutes.error("Task is not running"), Response.Status.BAD_REQUEST)
-            } else {
-                val result = GatewayRoutes.snapshot(frameProvider)
-                if (result != null) {
-                    corsResponse(newFixedLengthResponse(Response.Status.OK, result.mimeType, ByteArrayInputStream(result.bytes), result.bytes.size.toLong()))
-                } else {
-                    jsonResponse(GatewayRoutes.error("No frame available"), Response.Status.SERVICE_UNAVAILABLE)
-                }
-            }
-        }
+        method == Method.DELETE && uri.matches(Regex("/api/tasks/[^/]+")) -> cancelTask(uri)
 
-        // Get task events
-        method == Method.GET && uri.matches(Regex("/api/tasks/[^/]+/events")) -> {
-            val taskId = uri.removePrefix("/api/tasks/").removeSuffix("/events")
-            val task = taskManager.getTask(taskId)
-            if (task != null) {
-                jsonResponse(GatewayRoutes.ok(task.events))
-            } else {
-                jsonResponse(GatewayRoutes.error("Task not found: $taskId"), Response.Status.NOT_FOUND)
-            }
-        }
-
-        // Cancel task
-        method == Method.DELETE && uri.matches(Regex("/api/tasks/[^/]+")) -> {
-            val taskId = uri.removePrefix("/api/tasks/")
-            val cancelled = taskManager.cancelTask(taskId)
-            if (cancelled) jsonResponse(GatewayRoutes.ok("Task cancelled"))
-            else jsonResponse(GatewayRoutes.error("Task not found or already finished: $taskId"), Response.Status.NOT_FOUND)
-        }
-
-        // List agents
         method == Method.GET && uri == "/api/agents" -> {
-            val service = agentService ?: return jsonResponse(
-                GatewayRoutes.error("Agent service not configured"),
-                Response.Status.NOT_IMPLEMENTED
-            )
-            jsonResponse(GatewayRoutes.ok(runBlocking { service.listAgents() }))
+            val service = requireAgentService() ?: return notImplemented("Agent service not configured")
+            ok(runBlocking { service.listAgents() })
         }
 
-        // Get agent
         method == Method.GET && uri.matches(Regex("/api/agents/[^/]+")) -> {
-            val service = agentService ?: return jsonResponse(
-                GatewayRoutes.error("Agent service not configured"),
-                Response.Status.NOT_IMPLEMENTED
-            )
+            val service = requireAgentService() ?: return notImplemented("Agent service not configured")
             val agentId = uri.removePrefix("/api/agents/")
             val profile = runBlocking { service.getAgentProfile(agentId) }
-            if (profile != null) jsonResponse(GatewayRoutes.ok(profile))
-            else jsonResponse(GatewayRoutes.error("Agent not found: $agentId"), Response.Status.NOT_FOUND)
+            if (profile != null) ok(profile) else notFound("Agent not found: $agentId", details = mapOf("agentId" to agentId))
         }
 
-        // List runtimes for agent
         method == Method.GET && uri.matches(Regex("/api/agents/[^/]+/runs")) -> {
-            val service = agentService ?: return jsonResponse(
-                GatewayRoutes.error("Agent service not configured"),
-                Response.Status.NOT_IMPLEMENTED
-            )
+            val service = requireAgentService() ?: return notImplemented("Agent service not configured")
             val agentId = uri.removePrefix("/api/agents/").removeSuffix("/runs")
-            jsonResponse(GatewayRoutes.ok(runBlocking { service.listAutonomousRuntimes(agentId) }))
+            ok(runBlocking { service.listAutonomousRuntimes(agentId) })
         }
 
-        // Start runtime
-        method == Method.POST && uri.matches(Regex("/api/agents/[^/]+/runs")) -> {
-            val service = agentService ?: return jsonResponse(
-                GatewayRoutes.error("Agent service not configured"),
-                Response.Status.NOT_IMPLEMENTED
-            )
-            val agentId = uri.removePrefix("/api/agents/").removeSuffix("/runs")
-            val params = GatewayRoutes.parseBody(readBody(session))
-            val record = runBlocking {
-                service.startAutonomousAgent(
-                    AutonomousAgentStartRequest(
-                        agentId = agentId,
-                        initialSignals = parseSignals(params["signals"]),
-                        preloadMemory = parseMemorySeeds(params["preloadMemory"]),
-                        preloadKnowledge = parseKnowledgeSeeds(params["preloadKnowledge"])
-                    )
-                )
-            }
-            jsonResponse(GatewayRoutes.ok(record), Response.Status.CREATED)
-        }
+        method == Method.POST && uri.matches(Regex("/api/agents/[^/]+/runs")) -> startRuntime(uri, session)
 
-        // Get runtime
         method == Method.GET && uri.matches(Regex("/api/agents/runs/[^/]+")) -> {
-            val service = agentService ?: return jsonResponse(
-                GatewayRoutes.error("Agent service not configured"),
-                Response.Status.NOT_IMPLEMENTED
-            )
+            val service = requireAgentService() ?: return notImplemented("Agent service not configured")
             val runtimeId = uri.removePrefix("/api/agents/runs/")
             val runtime = runBlocking { service.getAutonomousRuntime(runtimeId) }
-            if (runtime != null) jsonResponse(GatewayRoutes.ok(runtime))
-            else jsonResponse(GatewayRoutes.error("Autonomous runtime not found: $runtimeId"), Response.Status.NOT_FOUND)
+            if (runtime != null) ok(runtime) else notFound("Autonomous runtime not found: $runtimeId", details = mapOf("runtimeId" to runtimeId))
         }
 
-        // Runtime events
         method == Method.GET && uri.matches(Regex("/api/agents/runs/[^/]+/events")) -> {
-            val service = agentService ?: return jsonResponse(
-                GatewayRoutes.error("Agent service not configured"),
-                Response.Status.NOT_IMPLEMENTED
-            )
+            val service = requireAgentService() ?: return notImplemented("Agent service not configured")
             val runtimeId = uri.removePrefix("/api/agents/runs/").removeSuffix("/events")
             val runtime = runBlocking { service.getAutonomousRuntime(runtimeId) }
             if (runtime == null) {
-                jsonResponse(GatewayRoutes.error("Autonomous runtime not found: $runtimeId"), Response.Status.NOT_FOUND)
+                notFound("Autonomous runtime not found: $runtimeId", details = mapOf("runtimeId" to runtimeId))
             } else {
-                jsonResponse(GatewayRoutes.ok(runBlocking { service.getAutonomousRuntimeEvents(runtimeId) }))
+                ok(runBlocking { service.getAutonomousRuntimeEvents(runtimeId) })
             }
         }
 
-        // Send runtime signal
-        method == Method.POST && uri.matches(Regex("/api/agents/runs/[^/]+/signals")) -> {
-            val service = agentService ?: return jsonResponse(
-                GatewayRoutes.error("Agent service not configured"),
-                Response.Status.NOT_IMPLEMENTED
-            )
-            val runtimeId = uri.removePrefix("/api/agents/runs/").removeSuffix("/signals")
-            val params = GatewayRoutes.parseBody(readBody(session))
-            val signal = parseSingleSignal(params)
-                ?: return jsonResponse(
-                    GatewayRoutes.error("Missing required signal payload"),
-                    Response.Status.BAD_REQUEST
-                )
-            val runtime = runBlocking { service.submitAutonomousSignal(runtimeId, signal) }
-            jsonResponse(GatewayRoutes.ok(runtime))
-        }
+        method == Method.POST && uri.matches(Regex("/api/agents/runs/[^/]+/signals")) -> sendRuntimeSignal(uri, session)
 
-        // Stop runtime
         method == Method.DELETE && uri.matches(Regex("/api/agents/runs/[^/]+")) -> {
-            val service = agentService ?: return jsonResponse(
-                GatewayRoutes.error("Agent service not configured"),
-                Response.Status.NOT_IMPLEMENTED
-            )
+            val service = requireAgentService() ?: return notImplemented("Agent service not configured")
             val runtimeId = uri.removePrefix("/api/agents/runs/")
             val stopped = runBlocking { service.stopAutonomousRuntime(runtimeId) }
-            if (stopped) jsonResponse(GatewayRoutes.ok("Autonomous runtime stopped"))
-            else jsonResponse(GatewayRoutes.error("Autonomous runtime not found: $runtimeId"), Response.Status.NOT_FOUND)
+            if (stopped) ok(mapOf("message" to "Autonomous runtime stopped"))
+            else notFound("Autonomous runtime not found: $runtimeId", details = mapOf("runtimeId" to runtimeId))
         }
 
-        // Stream status — check ownership and reclaim state
         method == Method.GET && uri == "/api/stream/status" -> {
-            val provider = streamStatusProvider
-                ?: return jsonResponse(GatewayRoutes.error("Stream management not available"), Response.Status.NOT_IMPLEMENTED)
-            jsonResponse(GatewayRoutes.ok(provider()))
+            val provider = streamStatusProvider ?: return notImplemented("Stream management not available")
+            ok(provider())
         }
 
-        // Stream handoff — phone releases connection, returns ESP32 URL for direct access
-        method == Method.POST && uri == "/api/stream/handoff" -> {
-            val handler = onStreamHandoff
-            if (handler == null) {
-                jsonResponse(GatewayRoutes.error("Stream management not available"), Response.Status.NOT_IMPLEMENTED)
-            } else {
-                val currentOwner = (streamStatusProvider?.invoke()?.get("owner") as? String) ?: "phone"
-                if (currentOwner == "remote") {
-                    jsonResponse(GatewayRoutes.error("Stream already handed off to remote client"), Response.Status.CONFLICT)
-                } else {
-                    val url = handler()
-                    if (url.isNullOrBlank()) {
-                        jsonResponse(GatewayRoutes.error("Phone has no active stream connection — device may not be connected"), Response.Status.SERVICE_UNAVAILABLE)
-                    } else {
-                        jsonResponse(GatewayRoutes.ok(mapOf("streamUrl" to url, "message" to "Phone connection released. Connect to streamUrl directly. Poll GET /api/stream/status to check for reclaim requests.")))
-                    }
-                }
-            }
-        }
+        method == Method.POST && uri == "/api/stream/handoff" -> streamHandoff()
 
-        // Stream reclaim — phone requests the stream back (sets flag for remote to see)
         method == Method.POST && uri == "/api/stream/reclaim" -> {
-            val handler = onStreamReclaim
-                ?: return jsonResponse(GatewayRoutes.error("Stream management not available"), Response.Status.NOT_IMPLEMENTED)
+            val handler = onStreamReclaim ?: return notImplemented("Stream management not available")
             handler()
-            jsonResponse(GatewayRoutes.ok(mapOf("message" to "Reclaim requested. Waiting for remote client to release.")))
+            ok(mapOf("message" to "Reclaim requested. Waiting for remote client to release."))
         }
 
-        // Stream release — remote client confirms it has disconnected from ESP32
         method == Method.POST && uri == "/api/stream/release" -> {
-            val handler = onStreamRelease
-                ?: return jsonResponse(GatewayRoutes.error("Stream management not available"), Response.Status.NOT_IMPLEMENTED)
+            val handler = onStreamRelease ?: return notImplemented("Stream management not available")
             handler()
-            jsonResponse(GatewayRoutes.ok(mapOf("message" to "Stream released. Phone is reconnecting.")))
+            ok(mapOf("message" to "Stream released. Phone is reconnecting."))
         }
 
-        // Commentary state
         method == Method.GET && uri == "/api/commentary/state" -> {
-            val provider = commentaryStateProvider
-                ?: return jsonResponse(GatewayRoutes.error("Commentary not available"), Response.Status.NOT_IMPLEMENTED)
-            jsonResponse(GatewayRoutes.ok(provider()))
+            val provider = commentaryStateProvider ?: return notImplemented("Commentary not available")
+            ok(provider())
         }
 
-        // Commentary entries (supports ?since=<timestamp> for incremental polling)
         method == Method.GET && uri == "/api/commentary/entries" -> {
-            val provider = commentaryEntriesProvider
-                ?: return jsonResponse(GatewayRoutes.error("Commentary not available"), Response.Status.NOT_IMPLEMENTED)
+            val provider = commentaryEntriesProvider ?: return notImplemented("Commentary not available")
             val since = session.parms["since"]?.toLongOrNull() ?: 0L
-            jsonResponse(GatewayRoutes.ok(provider(since)))
+            val entries = provider(since)
+            val nextSince = entries.mapNotNull { entry ->
+                (entry as? Map<*, *>)?.get("wallClockStartTime") as? Number
+            }.maxOfOrNull { it.toLong() } ?: since.takeIf { it > 0L }
+            ok(entries, meta = GatewayMeta(count = entries.size, nextSince = nextSince))
         }
 
-        // Commentary ASK — inject observation requests into consumers
-        method == Method.POST && uri == "/api/commentary/ask" -> {
-            val handler = onCommentaryAsk
-                ?: return jsonResponse(GatewayRoutes.error("Commentary not available"), Response.Status.NOT_IMPLEMENTED)
-            val body = GatewayRoutes.parseBody(readBody(session))
-            val requests = (body["requests"] as? List<*>)?.filterIsInstance<String>()
-            if (requests.isNullOrEmpty()) {
-                jsonResponse(GatewayRoutes.error("Missing required field: requests (string array)"), Response.Status.BAD_REQUEST)
-            } else {
-                handler(requests)
-                jsonResponse(GatewayRoutes.ok(mapOf("accepted" to requests.size)))
+        method == Method.POST && uri == "/api/commentary/ask" -> commentaryAsk(session)
+
+        method == Method.POST && uri == "/api/automations" -> createAutomation(session)
+
+        method == Method.GET && uri == "/api/automations" -> listAutomations()
+
+        method == Method.GET && uri.matches(Regex("/api/automations/[^/]+")) -> getAutomation(uri)
+
+        method == Method.PATCH && uri.matches(Regex("/api/automations/[^/]+")) -> updateAutomation(uri, session)
+
+        method == Method.GET && uri.matches(Regex("/api/automations/[^/]+/events")) -> getAutomationEvents(uri, session)
+
+        method == Method.POST && uri.matches(Regex("/api/automations/[^/]+/ack")) -> acknowledgeAutomation(uri, session)
+
+        else -> notFound("Not found: $uri", details = mapOf("path" to uri))
+    }
+
+    private fun pairDevice(session: IHTTPSession): Response {
+        val manager = automationManager ?: return notImplemented("Automation manager not configured")
+        val params = requireBodyMap(session) ?: return invalidBody()
+        val bridgeId = params["bridgeId"]?.toString()?.trim().orEmpty()
+        if (bridgeId.isBlank()) {
+            return missingField("bridgeId")
+        }
+        val bridgeName = params["bridgeName"]?.toString().orEmpty()
+        return ok(manager.pair(bridgeId, bridgeName), status = Response.Status.CREATED)
+    }
+
+    private fun createTask(session: IHTTPSession): Response {
+        val params = requireBodyMap(session) ?: return invalidBody()
+        val tool = params["tool"] as? String
+        if (tool.isNullOrBlank()) {
+            return missingField("tool")
+        }
+        val task = taskManager.createTask(tool, params - "tool")
+        return if (task.error?.startsWith("Unknown tool:") == true) {
+            error(
+                status = Response.Status.BAD_REQUEST,
+                message = task.error,
+                errorCode = GatewayRoutes.ERROR_UNKNOWN_TOOL,
+                details = mapOf("tool" to tool)
+            )
+        } else {
+            ok(task, status = Response.Status.CREATED)
+        }
+    }
+
+    private fun getTask(uri: String): Response {
+        val taskId = uri.removePrefix("/api/tasks/")
+        val task = taskManager.getTask(taskId)
+        return if (task != null) ok(task) else notFound("Task not found: $taskId", details = mapOf("taskId" to taskId))
+    }
+
+    private fun getTaskSnapshot(uri: String): Response {
+        val taskId = uri.removePrefix("/api/tasks/").removeSuffix("/snapshot")
+        val task = taskManager.getTask(taskId)
+            ?: return notFound("Task not found: $taskId", details = mapOf("taskId" to taskId))
+        if (task.status != GatewayTaskStatus.Running) {
+            return invalidState(
+                "Task is not running",
+                details = mapOf("taskId" to taskId, "status" to task.status.name)
+            )
+        }
+        return snapshotResponse("No frame available")
+    }
+
+    private fun getTaskEvents(uri: String, session: IHTTPSession): Response {
+        val taskId = uri.removePrefix("/api/tasks/").removeSuffix("/events")
+        val since = session.parms["since"]?.toLongOrNull()
+        val afterEventId = session.parms["afterEventId"]?.toLongOrNull()
+        val events = taskManager.listTaskEvents(taskId, since = since, afterEventId = afterEventId)
+            ?: return notFound("Task not found: $taskId", details = mapOf("taskId" to taskId))
+        val nextSince = events.maxOfOrNull { it.timestamp } ?: since
+        return ok(events, meta = GatewayMeta(count = events.size, nextSince = nextSince))
+    }
+
+    private fun cancelTask(uri: String): Response {
+        val taskId = uri.removePrefix("/api/tasks/")
+        return when (taskManager.cancelTask(taskId)) {
+            GatewayTaskCancelResult.Cancelled -> ok(mapOf("message" to "Task cancellation requested"))
+            GatewayTaskCancelResult.AlreadyFinished -> invalidState(
+                "Task is already finished",
+                details = mapOf("taskId" to taskId)
+            )
+            GatewayTaskCancelResult.NotFound -> notFound("Task not found: $taskId", details = mapOf("taskId" to taskId))
+        }
+    }
+
+    private fun startRuntime(uri: String, session: IHTTPSession): Response {
+        val service = requireAgentService() ?: return notImplemented("Agent service not configured")
+        val agentId = uri.removePrefix("/api/agents/").removeSuffix("/runs")
+        val params = requireBodyMap(session) ?: return invalidBody()
+        val record = runBlocking {
+            service.startAutonomousAgent(
+                AutonomousAgentStartRequest(
+                    agentId = agentId,
+                    initialSignals = parseSignals(params["signals"]),
+                    preloadMemory = parseMemorySeeds(params["preloadMemory"]),
+                    preloadKnowledge = parseKnowledgeSeeds(params["preloadKnowledge"])
+                )
+            )
+        }
+        return ok(record, status = Response.Status.CREATED)
+    }
+
+    private fun sendRuntimeSignal(uri: String, session: IHTTPSession): Response {
+        val service = requireAgentService() ?: return notImplemented("Agent service not configured")
+        val runtimeId = uri.removePrefix("/api/agents/runs/").removeSuffix("/signals")
+        val params = requireBodyMap(session) ?: return invalidBody()
+        val signal = parseSingleSignal(params)
+            ?: return missingField("channel/content", details = mapOf("required" to listOf("channel", "content")))
+        runBlocking { service.getAutonomousRuntime(runtimeId) }
+            ?: return notFound("Autonomous runtime not found: $runtimeId", details = mapOf("runtimeId" to runtimeId))
+        val runtime = runBlocking { service.submitAutonomousSignal(runtimeId, signal) }
+        return ok(runtime)
+    }
+
+    private fun streamHandoff(): Response {
+        val handler = onStreamHandoff ?: return notImplemented("Stream management not available")
+        val currentOwner = (streamStatusProvider?.invoke()?.get("owner") as? String) ?: "phone"
+        if (currentOwner == "remote") {
+            return conflict("Stream already handed off to remote client")
+        }
+        val url = handler()
+        return if (url.isNullOrBlank()) {
+            unavailable("Phone has no active stream connection")
+        } else {
+            ok(
+                mapOf(
+                    "streamUrl" to url,
+                    "message" to "Phone connection released. Connect to streamUrl directly. Poll GET /api/stream/status to check for reclaim requests."
+                )
+            )
+        }
+    }
+
+    private fun commentaryAsk(session: IHTTPSession): Response {
+        val handler = onCommentaryAsk ?: return notImplemented("Commentary not available")
+        val body = requireBodyMap(session) ?: return invalidBody()
+        val requests = (body["requests"] as? List<*>)?.filterIsInstance<String>()
+        if (requests.isNullOrEmpty()) {
+            return missingField("requests", details = mapOf("expected" to "string array"))
+        }
+        handler(requests)
+        return ok(mapOf("accepted" to requests.size))
+    }
+
+    private fun createAutomation(session: IHTTPSession): Response {
+        val manager = automationManager ?: return notImplemented("Automation manager not configured")
+        val params = requireBodyMap(session) ?: return invalidBody()
+        return runCatching {
+            manager.createAutomation(params)
+        }.fold(
+            onSuccess = { ok(it, status = Response.Status.CREATED) },
+            onFailure = {
+                error(
+                    status = Response.Status.BAD_REQUEST,
+                    message = it.message ?: "Failed to create automation",
+                    errorCode = GatewayRoutes.ERROR_MISSING_FIELD
+                )
             }
-        }
+        )
+    }
 
-        // 404
-        else -> jsonResponse(GatewayRoutes.error("Not found: $uri"), Response.Status.NOT_FOUND)
+    private fun listAutomations(): Response {
+        val manager = automationManager ?: return notImplemented("Automation manager not configured")
+        val rules = manager.listAutomations()
+        return ok(rules, meta = GatewayMeta(count = rules.size))
+    }
+
+    private fun getAutomation(uri: String): Response {
+        val manager = automationManager ?: return notImplemented("Automation manager not configured")
+        val automationId = uri.removePrefix("/api/automations/")
+        val rule = manager.getAutomation(automationId)
+        return if (rule != null) ok(rule) else notFound("Automation not found: $automationId", mapOf("automationId" to automationId))
+    }
+
+    private fun updateAutomation(uri: String, session: IHTTPSession): Response {
+        val manager = automationManager ?: return notImplemented("Automation manager not configured")
+        val automationId = uri.removePrefix("/api/automations/")
+        val params = requireBodyMap(session) ?: return invalidBody()
+        val rule = runCatching { manager.updateAutomation(automationId, params) }
+            .getOrElse {
+                return error(
+                    status = Response.Status.BAD_REQUEST,
+                    message = it.message ?: "Failed to update automation",
+                    errorCode = GatewayRoutes.ERROR_INVALID_BODY
+                )
+            }
+        return if (rule != null) ok(rule) else notFound("Automation not found: $automationId", mapOf("automationId" to automationId))
+    }
+
+    private fun getAutomationEvents(uri: String, session: IHTTPSession): Response {
+        val manager = automationManager ?: return notImplemented("Automation manager not configured")
+        val automationId = uri.removePrefix("/api/automations/").removeSuffix("/events")
+        val since = session.parms["since"]?.toLongOrNull()
+        val afterEventId = session.parms["afterEventId"]?.toLongOrNull()
+        val events = manager.listAutomationEvents(automationId, since = since, afterEventId = afterEventId)
+            ?: return notFound("Automation not found: $automationId", mapOf("automationId" to automationId))
+        val nextSince = events.maxOfOrNull { it.createdAt } ?: since
+        return ok(events, meta = GatewayMeta(count = events.size, nextSince = nextSince))
+    }
+
+    private fun acknowledgeAutomation(uri: String, session: IHTTPSession): Response {
+        val manager = automationManager ?: return notImplemented("Automation manager not configured")
+        val automationId = uri.removePrefix("/api/automations/").removeSuffix("/ack")
+        val params = requireBodyMap(session) ?: return invalidBody()
+        val eventId = (params["eventId"] as? Number)?.toLong() ?: return missingField("eventId")
+        val status = params["status"]?.toString()?.trim().orEmpty().ifBlank { "received" }
+        val message = params["message"]?.toString()
+        val event = manager.acknowledgeAutomationEvent(automationId, eventId, status, message)
+        return if (event != null) ok(event) else notFound(
+            "Automation or event not found",
+            mapOf("automationId" to automationId, "eventId" to eventId)
+        )
+    }
+
+    private fun requireAgentService(): AgentFrameworkService? = agentService
+
+    private fun requireBodyMap(session: IHTTPSession): Map<String, Any?>? {
+        val body = readBody(session)
+        return GatewayRoutes.parseBody(body)
     }
 
     private fun readBody(session: IHTTPSession): String {
@@ -343,15 +432,134 @@ class GatewayServer(
         return files["postData"] ?: ""
     }
 
+    private fun snapshotResponse(unavailableMessage: String = "No frame available — stream may not be connected"): Response {
+        val result = GatewayRoutes.snapshot(frameProvider)
+        return if (result != null) {
+            corsResponse(
+                newFixedLengthResponse(
+                    Response.Status.OK,
+                    result.mimeType,
+                    ByteArrayInputStream(result.bytes),
+                    result.bytes.size.toLong()
+                )
+            )
+        } else {
+            unavailable(unavailableMessage)
+        }
+    }
+
+    private fun ok(data: Any?, meta: GatewayMeta? = GatewayMeta(), status: Response.Status = Response.Status.OK): Response {
+        return jsonResponse(GatewayRoutes.ok(data, meta), status)
+    }
+
+    private fun invalidBody(): Response = error(
+        status = Response.Status.BAD_REQUEST,
+        message = "Request body is missing or invalid JSON",
+        errorCode = GatewayRoutes.ERROR_INVALID_BODY
+    )
+
+    private fun missingField(field: String, details: Any? = mapOf("field" to field)): Response = error(
+        status = Response.Status.BAD_REQUEST,
+        message = "Missing required field: $field",
+        errorCode = GatewayRoutes.ERROR_MISSING_FIELD,
+        details = details
+    )
+
+    private fun notFound(message: String, details: Any? = null): Response = error(
+        status = Response.Status.NOT_FOUND,
+        message = message,
+        errorCode = GatewayRoutes.ERROR_NOT_FOUND,
+        details = details
+    )
+
+    private fun invalidState(message: String, details: Any? = null): Response = error(
+        status = Response.Status.BAD_REQUEST,
+        message = message,
+        errorCode = GatewayRoutes.ERROR_INVALID_STATE,
+        details = details
+    )
+
+    private fun notImplemented(message: String): Response = error(
+        status = Response.Status.NOT_IMPLEMENTED,
+        message = message,
+        errorCode = GatewayRoutes.ERROR_NOT_IMPLEMENTED
+    )
+
+    private fun unavailable(message: String): Response = error(
+        status = Response.Status.SERVICE_UNAVAILABLE,
+        message = message,
+        errorCode = GatewayRoutes.ERROR_SERVICE_UNAVAILABLE,
+        retryable = true
+    )
+
+    private fun conflict(message: String): Response = error(
+        status = Response.Status.CONFLICT,
+        message = message,
+        errorCode = GatewayRoutes.ERROR_CONFLICT
+    )
+
+    private fun error(
+        status: Response.Status,
+        message: String,
+        errorCode: String,
+        details: Any? = null,
+        retryable: Boolean = false
+    ): Response {
+        return jsonResponse(
+            GatewayRoutes.error(
+                message = message,
+                errorCode = errorCode,
+                details = details,
+                retryable = retryable
+            ),
+            status
+        )
+    }
+
     private fun jsonResponse(json: String, status: Response.Status = Response.Status.OK): Response {
-        return corsResponse(newFixedLengthResponse(status, "application/json", json))
+        return corsResponse(newFixedLengthResponse(status, "application/json; charset=utf-8", json))
     }
 
     private fun corsResponse(response: Response): Response {
         response.addHeader("Access-Control-Allow-Origin", "*")
-        response.addHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-        response.addHeader("Access-Control-Allow-Headers", "Content-Type, X-API-Key")
+        response.addHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+        response.addHeader("Access-Control-Allow-Headers", "Content-Type, X-API-Key, Authorization, X-Binding-Token")
         return response
+    }
+
+    private fun requiresApiAuthentication(uri: String): Boolean {
+        if (!uri.startsWith("/api/")) return false
+        return uri != "/api/health" && uri != "/api/device/identity"
+    }
+
+    private fun isAuthorized(session: IHTTPSession, uri: String): Boolean {
+        val providedApiKey = session.headers["x-api-key"] ?: session.parms["api_key"]
+        if (providedApiKey == apiKey) return true
+        if (!uri.startsWith("/api/automations")) return false
+        val manager = automationManager ?: return false
+        val tokenHeader = session.headers["x-binding-token"]
+        val authorization = session.headers["authorization"]
+        val bearerToken = authorization
+            ?.takeIf { it.startsWith("Bearer ", ignoreCase = true) }
+            ?.removePrefix("Bearer ")
+            ?.trim()
+        return manager.isValidBindingToken(tokenHeader) || manager.isValidBindingToken(bearerToken)
+    }
+
+    private fun unauthorizedMessage(uri: String): String {
+        return if (uri.startsWith("/api/automations")) {
+            "Invalid or missing API key / binding token"
+        } else {
+            "Invalid or missing API key"
+        }
+    }
+
+    private fun unauthorizedCode(uri: String): String {
+        return if (uri.startsWith("/api/automations")) {
+            GatewayRoutes.ERROR_INVALID_TOKEN
+        } else {
+            GatewayRoutes.ERROR_INVALID_API_KEY
+        }
     }
 
     private fun parseSignals(raw: Any?): List<AgentSignalSeed> {

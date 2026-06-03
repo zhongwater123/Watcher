@@ -7,7 +7,7 @@ internal fun videoHeadlineStatus(status: VideoProcessingStatus): String {
     val message = status.message.trim()
     return when {
         !status.errorMessage.isNullOrBlank() -> status.errorMessage
-        status.stage == VideoRunStatus.Completed && status.finalConclusion.isNotBlank() -> status.finalConclusion
+        status.stage in setOf(VideoRunStatus.Completed, VideoRunStatus.CompletedDegraded) && status.finalConclusion.isNotBlank() -> status.finalConclusion
         message.isNotBlank() -> message
         else -> fallbackVideoStatusMessage(status)
     }
@@ -36,6 +36,7 @@ private fun fallbackVideoStatusMessage(status: VideoProcessingStatus): String {
         }
         VideoRunStatus.Summarizing -> "所有片段已完成，正在生成最终汇总"
         VideoRunStatus.Completed -> "视频分析已经完成"
+        VideoRunStatus.CompletedDegraded -> "分析完成，但完整视频合并失败"
         VideoRunStatus.Failed -> "视频处理失败，请检查错误信息后重试"
         VideoRunStatus.Cancelled -> "当前视频处理任务已取消"
     }

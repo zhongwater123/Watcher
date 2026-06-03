@@ -9,6 +9,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Manages lifecycle of tasks submitted through the gateway API.
@@ -38,6 +39,7 @@ class GatewayTaskManager {
     private val executors = ConcurrentHashMap<String, ToolExecutor>()
     private val runningJobs = ConcurrentHashMap<String, Job>()
     private val onCancelCallbacks = ConcurrentHashMap<String, () -> Unit>()
+    private val eventIds = ConcurrentHashMap<String, AtomicLong>()
 
     fun registerExecutor(toolName: String, executor: ToolExecutor) {
         executors[toolName] = executor
@@ -58,6 +60,7 @@ class GatewayTaskManager {
         }
 
         tasks[id] = task
+        eventIds[id] = AtomicLong(0L)
         pruneOldTasks()
 
         val job = scope.launch {
@@ -66,9 +69,10 @@ class GatewayTaskManager {
                 Log.d(TAG, "Task $id: executing tool=$tool")
 
                 val result = executor.execute(params) { event ->
-                    tasks[id]?.let { t ->
-                        t.events.add(event)
-                        t.updatedAt = System.currentTimeMillis()
+                    tasks[id]?.let { taskSnapshot ->
+                        val normalized = event.copy(id = nextEventId(id))
+                        taskSnapshot.events.add(normalized)
+                        taskSnapshot.updatedAt = System.currentTimeMillis()
                     }
                 }
 
@@ -100,12 +104,21 @@ class GatewayTaskManager {
         .sortedByDescending { it.createdAt }
         .take(20)
 
-    fun cancelTask(id: String): Boolean {
-        val task = tasks[id] ?: return false
+    fun listTaskEvents(id: String, since: Long? = null, afterEventId: Long? = null): List<GatewayEvent>? {
+        val task = tasks[id] ?: return null
+        return task.events.filter { event ->
+            val matchesTimestamp = since?.let { event.timestamp > it } ?: true
+            val matchesEventId = afterEventId?.let { event.id > it } ?: true
+            matchesTimestamp && matchesEventId
+        }
+    }
+
+    fun cancelTask(id: String): GatewayTaskCancelResult {
+        val task = tasks[id] ?: return GatewayTaskCancelResult.NotFound
         if (task.status == GatewayTaskStatus.Completed ||
             task.status == GatewayTaskStatus.Failed ||
             task.status == GatewayTaskStatus.Cancelled
-        ) return false
+        ) return GatewayTaskCancelResult.AlreadyFinished
         val callback = onCancelCallbacks.remove(id)
         if (callback != null) {
             // Graceful cancel: callback signals the executor to stop,
@@ -116,7 +129,7 @@ class GatewayTaskManager {
             runningJobs.remove(id)?.cancel()
             updateTask(id) { it.copy(status = GatewayTaskStatus.Cancelled) }
         }
-        return true
+        return GatewayTaskCancelResult.Cancelled
     }
 
     /** Register a cleanup callback invoked when a task is cancelled. */
@@ -126,6 +139,7 @@ class GatewayTaskManager {
 
     fun release() {
         tasks.clear()
+        eventIds.clear()
     }
 
     private fun updateTask(id: String, transform: (GatewayTask) -> GatewayTask) {
@@ -140,6 +154,14 @@ class GatewayTaskManager {
             .filter { it.status in setOf(GatewayTaskStatus.Completed, GatewayTaskStatus.Failed, GatewayTaskStatus.Cancelled) }
             .sortedBy { it.createdAt }
             .take(tasks.size - MAX_TASKS)
-        toRemove.forEach { tasks.remove(it.id) }
+        toRemove.forEach {
+            tasks.remove(it.id)
+            eventIds.remove(it.id)
+        }
+    }
+
+    private fun nextEventId(taskId: String): Long {
+        val counter = eventIds.getOrPut(taskId) { AtomicLong(0L) }
+        return counter.incrementAndGet()
     }
 }

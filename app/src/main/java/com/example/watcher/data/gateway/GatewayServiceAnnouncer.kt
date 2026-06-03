@@ -26,12 +26,17 @@ class GatewayServiceAnnouncer(context: Context) {
     private val nsdManager = context.getSystemService(Context.NSD_SERVICE) as NsdManager
     private var registrationListener: NsdManager.RegistrationListener? = null
 
-    fun register(port: Int) {
+    fun register(port: Int, attributes: Map<String, String> = emptyMap()) {
         unregister()
         val serviceInfo = NsdServiceInfo().apply {
             serviceName = SERVICE_NAME
             serviceType = SERVICE_TYPE
             setPort(port)
+            attributes.forEach { (key, value) ->
+                if (key.isNotBlank() && value.isNotBlank()) {
+                    setAttribute(key, value)
+                }
+            }
         }
         val listener = object : NsdManager.RegistrationListener {
             override fun onServiceRegistered(info: NsdServiceInfo) {

@@ -128,11 +128,8 @@ internal class VideoTaskPlanner(
             - captureIntervalSeconds 表示两次录制开始之间的间隔。
             - segmentCount 必须与 recordingDurationSeconds 和 captureIntervalSeconds 保持一致。
             - sceneContext 只描述稳定、可观察的场景事实。
-            - segmentAnalysisPrompt 必须是给用户可直接编辑的简体中文提示词，用于指导单个片段分析。
-            - finalSummaryPrompt 必须是给用户可直接编辑的简体中文提示词，用于指导全局汇总。
-            - 两个提示词都要明确：JSON 字段名保持英文，字段值与说明文字使用简体中文。
-            - confidence 优先使用 0 到 1 之间的数字；如果无法量化，也可以使用“高”“中”“低”。
-            - timelineEvents 中的每一项都必须包含 timestampSeconds、title、detail、confidence。
+            - segmentAnalysisPrompt 是内容关注重点指引（如”关注对话内容和产品评价”），只描述分析焦点，不要包含任何输出格式、JSON结构、字段名等技术说明。
+            - finalSummaryPrompt 是报告目标指引（如”整理出产品优缺点和最终推荐”），只描述报告关注点，不要包含输出格式说明。
             - 这些参数只是推荐值，用户后续还可以手动调整。
         """.trimIndent()
     }

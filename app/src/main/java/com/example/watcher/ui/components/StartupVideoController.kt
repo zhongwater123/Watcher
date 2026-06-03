@@ -62,6 +62,7 @@ class StartupVideoController private constructor(
     private var released = false
     private var hasStartedPlayback = false
     private val handler = Handler(Looper.getMainLooper())
+    private val hapticEngine = StartupHapticEngine(context)
 
     private val timeoutRunnable = Runnable {
         if (!hasStartedPlayback && !released) {
@@ -98,6 +99,7 @@ class StartupVideoController private constructor(
     fun release() {
         if (released) return
         released = true
+        hapticEngine.stop()
         handler.removeCallbacks(timeoutRunnable)
         handler.removeCallbacks(immersiveEnforcer)
         player?.release()
@@ -193,6 +195,7 @@ class StartupVideoController private constructor(
                     override fun onRenderedFirstFrame() {
                         hasStartedPlayback = true
                         handler.removeCallbacks(timeoutRunnable)
+                        hapticEngine.startMarbles()
                         Log.d(TAG, "[T+${SystemClock.elapsedRealtime() - processStartTime}ms] first frame rendered")
                     }
 
@@ -228,6 +231,9 @@ class StartupVideoController private constructor(
         if (released) return
         Log.d(TAG, "[T+${SystemClock.elapsedRealtime() - processStartTime}ms] video ended — phase 1: fade to black")
         handler.removeCallbacks(timeoutRunnable)
+
+        // Switch haptics: marbles → rain crescendo
+        hapticEngine.startRain()
 
         // Release player — TextureView goes black, overlay becomes solid black
         player?.release()
@@ -266,6 +272,7 @@ class StartupVideoController private constructor(
         if (released) return
         Log.d(TAG, "[T+${SystemClock.elapsedRealtime() - processStartTime}ms] finishAndDetach")
         released = true
+        hapticEngine.stop()
         handler.removeCallbacks(timeoutRunnable)
         handler.removeCallbacks(immersiveEnforcer)
         player?.release()

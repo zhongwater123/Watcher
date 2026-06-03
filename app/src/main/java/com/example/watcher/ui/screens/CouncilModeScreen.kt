@@ -164,8 +164,9 @@ internal fun CouncilModeScreen(
                     text = when (streamState.connectionStatus) {
                         ConnectionStatus.Connecting -> "Connecting stream"
                         is ConnectionStatus.Error -> (streamState.connectionStatus as ConnectionStatus.Error).message
-                        ConnectionStatus.Connected -> if (streamState.source == StreamSource.FrontCameraFallback) {
-                            "ESP32 不可用，已切到手机前置摄像头"
+                        ConnectionStatus.Connected -> if (streamState.source.isCameraFallback) {
+                            val cameraName = if (streamState.source == StreamSource.FrontCameraFallback) "前置" else "后置"
+                            "ESP32 不可用，已切到手机${cameraName}摄像头"
                         } else {
                             "Receiving live frame"
                         }
@@ -307,7 +308,7 @@ internal fun CouncilModeScreen(
                     }
                 }
 
-                if (streamState.source == StreamSource.FrontCameraFallback) {
+                if (streamState.source.isCameraFallback) {
                     Text(
                         text = "当前视频源：${streamState.sourceLabel}",
                         color = Color.White.copy(alpha = 0.45f),

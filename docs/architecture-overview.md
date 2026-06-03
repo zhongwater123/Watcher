@@ -261,6 +261,8 @@ Key classes:
 Capabilities include:
 
 - health and capability endpoints
+- device identity and pairing for LAN discovery
+- device identity and optional automation-oriented gateway extensions
 - stream snapshots
 - task creation and status inspection
 - agent runtime inspection and control
@@ -268,6 +270,8 @@ Capabilities include:
 - stream handoff and reclaim signaling
 
 This subsystem makes the app usable as a local network service, not only as a handheld UI.
+
+The repository root also contains `mcp/`, a zero-build desktop MCP companion that discovers Watcher devices over LAN and exposes the gateway as generic tools for external agents.
 
 ### Agent Runtime
 

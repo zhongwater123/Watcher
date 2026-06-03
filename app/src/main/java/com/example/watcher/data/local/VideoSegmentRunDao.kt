@@ -14,6 +14,9 @@ interface VideoSegmentRunDao {
     @Query("SELECT * FROM video_segment_runs WHERE localFilePath IS NOT NULL AND localFilePath != '' ORDER BY updatedAt DESC")
     fun observeAllSegmentsWithFiles(): Flow<List<VideoSegmentRun>>
 
+    @Query("SELECT * FROM video_segment_runs WHERE id = :id")
+    suspend fun getById(id: Long): VideoSegmentRun?
+
     @Query("SELECT * FROM video_segment_runs WHERE runId = :runId ORDER BY segmentIndex ASC")
     suspend fun getSegmentsForRun(runId: Long): List<VideoSegmentRun>
 

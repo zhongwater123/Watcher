@@ -19,6 +19,24 @@ enum class VideoTaskCategory(val value: String) {
     }
 }
 
+enum class RecordingScenario(
+    val value: String,
+    val label: String,
+    val outputFocus: String
+) {
+    General("general", "通用记录", "概览、主题脉络、关键点、时间线、重要片段、待跟进事项"),
+    ClassLecture("class_lecture", "课堂/讲座", "知识大纲、重点难点、例子/演示、复习清单、自测问题"),
+    Meeting("meeting", "会议", "议题、结论、决策、行动项、责任人、未决问题"),
+    Training("training", "培训", "流程步骤、操作规范、注意事项、常见错误、练习建议"),
+    Interview("interview", "访谈/研讨", "观点归纳、问题与回答、共识/分歧、引用摘录");
+
+    companion object {
+        fun fromValue(value: String?): RecordingScenario {
+            return entries.firstOrNull { it.value == value } ?: General
+        }
+    }
+}
+
 @Entity(tableName = "video_process_tasks")
 data class VideoProcessTask(
     @PrimaryKey(autoGenerate = true)
@@ -34,6 +52,8 @@ data class VideoProcessTask(
     @ColumnInfo(name = "analysisPrompt")
     val segmentAnalysisPrompt: String,
     val finalSummaryPrompt: String,
+    val recordingScenario: String = RecordingScenario.General.value,
+    val speechInputEnabled: Boolean = false,
     val plannedDurationSeconds: Int,
     val plannedSamplingFps: Int,
     val plannedSegmentDurationSeconds: Int,
@@ -60,6 +80,8 @@ data class VideoProcessRun(
     val templateLabel: String? = null,
     val taskTitle: String = "",
     val taskRequirement: String = "",
+    val recordingScenario: String = RecordingScenario.General.value,
+    val speechInputEnabled: Boolean = false,
     val status: VideoRunStatus = VideoRunStatus.Idle,
     val recordingStartedAt: Long? = null,
     val recordingEndedAt: Long? = null,
@@ -70,8 +92,34 @@ data class VideoProcessRun(
     val finalSummary: String = "",
     val finalConclusion: String = "",
     val rawModelSummary: String = "",
+    val structuredNoteJson: String = "",
+    val markdownNote: String = "",
+    val audioEnhancementInfo: String = "",
     val mergedVideoPath: String? = null,
+    val fullMediaPath: String? = null,
+    val fullMediaDurationMs: Long = 0L,
+    val fullMediaHasAudio: Boolean = false,
+    val fullMediaVideoSource: String = "",
     val errorMessage: String? = null,
+    val degradedReason: String? = null,
+    val continuousAudioPath: String? = null,
+    val continuousAudioDurationMs: Long = 0L,
+    val continuousAudioStartedAt: Long = 0L,
+    val outlineMarkdown: String = "",
+    val outlineGeneratedAt: Long = 0L,
+    val reportVersion: Int = 0,
+    @ColumnInfo(defaultValue = "0")
+    val mergedSegmentCountActual: Int = 0,
+    @ColumnInfo(defaultValue = "0")
+    val segmentsMissingMergedAnalysisAsset: Int = 0,
+    @ColumnInfo(defaultValue = "0")
+    val audioOutlineAvailable: Boolean = false,
+    @ColumnInfo(defaultValue = "0")
+    val videoRefinementApplied: Boolean = false,
+    @ColumnInfo(defaultValue = "")
+    val videoRefinementInputMode: String = "",
+    @ColumnInfo(defaultValue = "")
+    val reportPipelineStagesJson: String = "",
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis()
 )
@@ -86,6 +134,7 @@ enum class VideoRunStatus {
     Analyzing,
     Summarizing,
     Completed,
+    CompletedDegraded,
     Failed,
     Cancelled
 }
@@ -109,10 +158,17 @@ data class VideoSegmentRun(
     val segmentIndex: Int,
     val status: VideoRunStatus = VideoRunStatus.Idle,
     val durationSeconds: Int,
+    val durationMs: Long = durationSeconds * 1_000L,
     val localFilePath: String? = null,
+    val mediaStartMs: Long? = null,
+    val mediaEndMs: Long? = null,
+    val wallClockStartMs: Long? = null,
+    val wallClockEndMs: Long? = null,
+    val interrupted: Boolean = false,
     val arkFileId: String? = null,
     val summary: String = "",
     val conclusion: String = "",
+    val evidenceJson: String = "",
     val errorMessage: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis()
@@ -142,6 +198,144 @@ data class TimelineEventEntity(
     val createdAt: Long = System.currentTimeMillis()
 )
 
+@Entity(
+    tableName = "video_speech_transcripts",
+    foreignKeys = [
+        ForeignKey(
+            entity = VideoProcessRun::class,
+            parentColumns = ["id"],
+            childColumns = ["runId"],
+            onDelete = ForeignKey.CASCADE
+        )
+    ],
+    indices = [
+        Index("runId"),
+        Index("segmentIndex"),
+        Index("timestamp"),
+        Index(value = ["runId", "timestamp", "text"], unique = true)
+    ]
+)
+data class VideoSpeechTranscriptEntity(
+    @PrimaryKey(autoGenerate = true)
+    val id: Long = 0,
+    val runId: Long,
+    val segmentIndex: Int? = null,
+    val timestamp: Long,
+    val displayTimestamp: String,
+    val text: String,
+    val isFinal: Boolean = true,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
+enum class VideoAudioAssetType(val value: String) {
+    MasterAudio("masterAudio"),
+    SegmentAudio("segmentAudio");
+
+    companion object {
+        fun fromValue(value: String?): VideoAudioAssetType {
+            return entries.firstOrNull { it.value == value } ?: SegmentAudio
+        }
+    }
+}
+
+@Entity(
+    tableName = "video_audio_assets",
+    foreignKeys = [
+        ForeignKey(
+            entity = VideoProcessRun::class,
+            parentColumns = ["id"],
+            childColumns = ["runId"],
+            onDelete = ForeignKey.CASCADE
+        ),
+        ForeignKey(
+            entity = VideoSegmentRun::class,
+            parentColumns = ["id"],
+            childColumns = ["segmentRunId"],
+            onDelete = ForeignKey.CASCADE
+        )
+    ],
+    indices = [
+        Index("runId"),
+        Index("segmentRunId"),
+        Index(value = ["runId", "assetType", "segmentIndex"], unique = true)
+    ]
+)
+data class VideoAudioAssetEntity(
+    @PrimaryKey(autoGenerate = true)
+    val id: Long = 0,
+    val runId: Long,
+    val segmentRunId: Long? = null,
+    val segmentIndex: Int? = null,
+    val assetType: String,
+    val localFilePath: String,
+    val durationMs: Long = 0L,
+    val sampleRate: Int? = null,
+    val channelCount: Int? = null,
+    val codecMime: String = "",
+    val sourceVideoPath: String? = null,
+    val diagnosticsJson: String = "",
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis()
+)
+
+enum class VideoRemoteAssetKind(val value: String) {
+    SegmentVideo("segment_video"),
+    MergedChunkVideo("merged_chunk_video"),
+    MasterVideo("master_video"),
+    FullMediaVideo("full_media_video"),
+    SegmentAudio("segment_audio"),
+    MasterAudio("master_audio"),
+    MergedSegmentVideo("merged_segment_video");
+
+    companion object {
+        fun fromValue(value: String?): VideoRemoteAssetKind {
+            return entries.firstOrNull { it.value == value } ?: SegmentVideo
+        }
+    }
+}
+
+@Entity(
+    tableName = "video_remote_file_bindings",
+    foreignKeys = [
+        ForeignKey(
+            entity = VideoProcessRun::class,
+            parentColumns = ["id"],
+            childColumns = ["runId"],
+            onDelete = ForeignKey.CASCADE
+        ),
+        ForeignKey(
+            entity = VideoSegmentRun::class,
+            parentColumns = ["id"],
+            childColumns = ["segmentRunId"],
+            onDelete = ForeignKey.CASCADE
+        )
+    ],
+    indices = [
+        Index("runId"),
+        Index("segmentRunId"),
+        Index("arkFileId"),
+        Index(value = ["runId", "assetKind", "localPath"], unique = true)
+    ]
+)
+data class VideoRemoteFileBindingEntity(
+    @PrimaryKey(autoGenerate = true)
+    val id: Long = 0,
+    val runId: Long,
+    val segmentRunId: Long? = null,
+    val assetKind: String,
+    val localPath: String,
+    val lengthBytes: Long = 0L,
+    val lastModified: Long = 0L,
+    val mediaType: String = "video/mp4",
+    val arkFileId: String? = null,
+    val status: String = "local",
+    val uploadAttemptCount: Int = 0,
+    val lastCheckedAt: Long = 0L,
+    val diagnosticsJson: String = "",
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis()
+)
+
 data class VideoProcessTaskDraft(
     val taskId: Long? = null,
     val templateId: String? = null,
@@ -154,6 +348,8 @@ data class VideoProcessTaskDraft(
     val sceneContext: String = "",
     val segmentAnalysisPrompt: String = "",
     val finalSummaryPrompt: String = "",
+    val recordingScenario: String = RecordingScenario.General.value,
+    val speechInputEnabled: Boolean = false,
     val plannedDurationSeconds: Int = DEFAULT_DURATION_SECONDS,
     val plannedSamplingFps: Int = DEFAULT_SAMPLING_FPS,
     val plannedSegmentDurationSeconds: Int = DEFAULT_SEGMENT_DURATION_SECONDS,
@@ -173,9 +369,7 @@ data class VideoProcessTaskDraft(
         val safeSegmentDuration = plannedSegmentDurationSeconds
             .coerceIn(MIN_SEGMENT_DURATION_SECONDS, MAX_SEGMENT_DURATION_SECONDS)
             .coerceAtMost(safeDuration)
-        val safeCaptureInterval = captureIntervalSeconds
-            .coerceIn(MIN_CAPTURE_INTERVAL_SECONDS, MAX_CAPTURE_INTERVAL_SECONDS)
-            .coerceAtLeast(safeSegmentDuration)
+        val safeCaptureInterval = safeSegmentDuration
         val safeSegmentCount = ceil(safeDuration / safeCaptureInterval.toDouble()).toInt()
             .coerceAtLeast(1)
         val safeSceneContext = sceneContext.ifBlank { DEFAULT_SCENE_CONTEXT }
@@ -192,15 +386,18 @@ data class VideoProcessTaskDraft(
             )
         }
         val safeCategory = VideoTaskCategory.fromValue(taskCategory)?.value
+        val safeRecordingScenario = RecordingScenario.fromValue(recordingScenario).value
 
         return copy(
             taskCategory = safeCategory,
+            recordingScenario = safeRecordingScenario,
             strategyReason = strategyReason.trim(),
             title = safeTitle,
             userRequirement = safeRequirement,
             sceneContext = safeSceneContext,
             segmentAnalysisPrompt = safeSegmentPrompt,
             finalSummaryPrompt = safeFinalSummaryPrompt,
+            speechInputEnabled = false,
             plannedDurationSeconds = safeDuration,
             plannedSamplingFps = safeSamplingFps,
             plannedSegmentDurationSeconds = safeSegmentDuration,
@@ -225,6 +422,8 @@ data class VideoProcessTaskDraft(
             sceneContext = normalized.sceneContext,
             segmentAnalysisPrompt = normalized.segmentAnalysisPrompt,
             finalSummaryPrompt = normalized.finalSummaryPrompt,
+            recordingScenario = normalized.recordingScenario,
+            speechInputEnabled = normalized.speechInputEnabled,
             plannedDurationSeconds = normalized.plannedDurationSeconds,
             plannedSamplingFps = normalized.plannedSamplingFps,
             plannedSegmentDurationSeconds = normalized.plannedSegmentDurationSeconds,
@@ -241,9 +440,9 @@ data class VideoProcessTaskDraft(
     }
 
     companion object {
-        const val DEFAULT_DURATION_SECONDS = 30
-        const val DEFAULT_SEGMENT_DURATION_SECONDS = 10
-        const val DEFAULT_CAPTURE_INTERVAL_SECONDS = 10
+        const val DEFAULT_DURATION_SECONDS = 3_600
+        const val DEFAULT_SEGMENT_DURATION_SECONDS = 60
+        const val DEFAULT_CAPTURE_INTERVAL_SECONDS = 60
         const val DEFAULT_SAMPLING_FPS = 1
         const val MIN_DURATION_SECONDS = 5
         const val MAX_DURATION_SECONDS = 21_600
@@ -270,6 +469,8 @@ data class VideoProcessTaskDraft(
                 sceneContext = task.sceneContext,
                 segmentAnalysisPrompt = task.segmentAnalysisPrompt,
                 finalSummaryPrompt = task.finalSummaryPrompt,
+                recordingScenario = task.recordingScenario,
+                speechInputEnabled = task.speechInputEnabled,
                 plannedDurationSeconds = task.plannedDurationSeconds,
                 plannedSamplingFps = task.plannedSamplingFps,
                 plannedSegmentDurationSeconds = task.plannedSegmentDurationSeconds,
@@ -285,41 +486,12 @@ data class VideoProcessTaskDraft(
         fun buildFallbackSegmentAnalysisPrompt(
             userRequirement: String,
             sceneContext: String
-        ): String {
-            return buildString {
-                append("请只分析当前上传的视频片段，围绕任务目标“")
-                append(userRequirement)
-                append("”。")
-                append("结合场景参考：")
-                append(sceneContext)
-                append("。")
-                append("只返回 JSON，字段为 summary、conclusion、timelineEvents。")
-                append("timelineEvents 中每一项必须包含 timestampSeconds、title、detail、confidence。")
-                append("JSON 字段名保持英文，字段值与说明文字请使用简体中文。")
-                append("confidence 优先使用 0 到 1 之间的数字；如果无法量化，也可以使用“高”“中”“低”。")
-                append("timestampSeconds 使用当前片段内的相对秒数，不要推断片段外内容。")
-            }
-        }
+        ): String = listOf(userRequirement, sceneContext).joinToString(separator = " | ")
 
         fun buildFallbackFinalSummaryPrompt(
             userRequirement: String,
             sceneContext: String
-        ): String {
-            return buildString {
-                append("请基于全部分片分析结果，汇总任务目标“")
-                append(userRequirement)
-                append("”的最终结论。")
-                append("场景参考：")
-                append(sceneContext)
-                append("。")
-                append("需要串联完整时序，合并重复事件，并区分明确观察与谨慎推断。")
-                append("只返回 JSON，字段为 summary、conclusion、timelineEvents。")
-                append("timelineEvents 中每一项必须包含 timestampSeconds、title、detail、confidence。")
-                append("JSON 字段名保持英文，字段值与说明文字请使用简体中文。")
-                append("confidence 优先使用 0 到 1 之间的数字；如果无法量化，也可以使用“高”“中”“低”。")
-                append("timestampSeconds 使用整个任务时间线上的绝对秒数。")
-            }
-        }
+        ): String = listOf(userRequirement, sceneContext).joinToString(separator = " | ")
     }
 }
 
@@ -338,6 +510,8 @@ data class VideoTaskPlan(
     val segmentCount: Int,
     val segmentAnalysisPrompt: String,
     val finalSummaryPrompt: String,
+    val recordingScenario: String = RecordingScenario.General.value,
+    val speechInputEnabled: Boolean = false,
     val autoStartStreamingOutput: Boolean = false,
     val finalSummaryEnabled: Boolean = true,
     val confirmationNotes: String = ""
@@ -359,6 +533,8 @@ data class VideoTaskPlan(
             sceneContext = sceneContext,
             segmentAnalysisPrompt = segmentAnalysisPrompt,
             finalSummaryPrompt = finalSummaryPrompt,
+            recordingScenario = recordingScenario,
+            speechInputEnabled = speechInputEnabled,
             plannedDurationSeconds = recordingDurationSeconds,
             plannedSamplingFps = samplingFps,
             plannedSegmentDurationSeconds = segmentDurationSeconds,
@@ -383,7 +559,15 @@ data class VideoAnalysisResult(
     val summary: String,
     val conclusion: String,
     val timelineEvents: List<VideoTimelineEvent>,
-    val rawResponse: String = ""
+    val rawResponse: String = "",
+    val structuredNoteJson: String = "",
+    val markdownNote: String = "",
+    val evidenceJson: String = ""
+)
+
+data class VideoSpeechTranscript(
+    val timestamp: Long,
+    val text: String
 )
 
 data class VideoSegmentFeedback(
@@ -421,6 +605,15 @@ data class VideoProcessingStatus(
     val nextCaptureInSeconds: Int? = null,
     val stopRequested: Boolean = false,
     val segmentFeedbacks: List<VideoSegmentFeedback> = emptyList(),
+    val speechInputEnabled: Boolean = false,
+    val isSpeechActive: Boolean = false,
+    val isSpeechListening: Boolean = false,
+    val speechErrorMessage: String? = null,
+    val recentSpeech: List<SpeechTranscriptEntry> = emptyList(),
     val errorMessage: String? = null,
-    val isBusy: Boolean = false
+    val isBusy: Boolean = false,
+    val isTaskSaving: Boolean = false,
+    val micPermissionGranted: Boolean = false,
+    val currentSegmentHasAudio: Boolean = false,
+    val segmentAudioResults: List<Boolean> = emptyList()
 )

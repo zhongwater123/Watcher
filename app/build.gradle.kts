@@ -431,6 +431,13 @@ dependencies {
     implementation(libs.androidx.media3.exoplayer)
     implementation(libs.androidx.media3.ui)
 
+    // MediaPipe pose estimation
+    implementation(libs.mediapipe.tasks.vision)
+
+    // TarsosDSP audio beat detection
+    implementation(libs.tarsosdsp.core)
+    implementation(libs.tarsosdsp.jvm)
+
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

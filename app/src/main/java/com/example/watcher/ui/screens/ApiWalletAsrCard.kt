@@ -66,11 +66,11 @@ internal fun AsrConfigCard(
     }
     val helperText = when (state.source) {
         AsrConfigSource.Wallet ->
-            "直播模式和 Council 模式会直接使用这里保存的豆包流式语音识别配置。"
+            "Live、Council 和视频分析的语音输入均使用这里保存的豆包流式语音识别配置。"
         AsrConfigSource.LegacyRuntime ->
             "检测到旧运行时语音配置。这些值不会直接用于当前火山 ASR；请确认后重新保存到 API 钱包。"
         AsrConfigSource.BuildConfigFallback ->
-            "当前内容来自 local.properties。点击保存后，后续直播语音会优先走 API 钱包。"
+            "当前内容来自 local.properties。点击保存后，后续语音识别会优先走 API 钱包。"
         AsrConfigSource.Missing ->
             "默认按豆包大模型流式语音识别来配。通常只需要填 App Key 和 Access Key。"
     }
@@ -100,11 +100,11 @@ internal fun AsrConfigCard(
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Text(
-                        text = "豆包直播语音识别",
+                        text = "豆包语音识别",
                         style = MaterialTheme.typography.titleLarge
                     )
                     Text(
-                        text = "独立于 LLM 供应商钱包，专门服务 Live / Council 模式。",
+                        text = "独立于 LLM 供应商钱包，服务 Live、Council 和视频分析中的语音输入。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

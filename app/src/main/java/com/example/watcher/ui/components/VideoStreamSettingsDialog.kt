@@ -1,5 +1,6 @@
 ﻿package com.example.watcher.ui.components
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -12,9 +13,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -28,6 +33,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -91,6 +97,7 @@ fun VideoStreamSettingsDialog(
     }
     var wifiSsid by remember { mutableStateOf(settings?.preferredWifiSsid.orEmpty()) }
     var wifiPassword by remember { mutableStateOf("") }
+    var advancedExpanded by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(
         settings?.ipAddress,
         settings?.port,
@@ -127,6 +134,13 @@ fun VideoStreamSettingsDialog(
         }
     }
 
+    LaunchedEffect(Unit) {
+        val isFirstSetup = settings == null || ipAddress == VideoStreamSettings.DEFAULT_DEVICE_IP
+        if (isFirstSetup && !scanState.isScanning && scanState.devices.isEmpty()) {
+            onScanDevices()
+        }
+    }
+
     val textFieldColors = OutlinedTextFieldDefaults.colors(
         focusedContainerColor = MaterialTheme.colorScheme.surface,
         unfocusedContainerColor = MaterialTheme.colorScheme.surface,
@@ -157,7 +171,7 @@ fun VideoStreamSettingsDialog(
                     style = MaterialTheme.typography.titleLarge
                 )
                 Text(
-                    text = "统一管理摄像头连接、配网、补光与监控执行策略。",
+                    text = "扫描并选择设备即可开始使用，更多选项在「高级设置」中。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -277,55 +291,6 @@ fun VideoStreamSettingsDialog(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    Text(
-                        text = stringResource(R.string.settings_stream_resolution),
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Medium
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        ProfileChip(
-                            title = "VGA",
-                            selected = resolution == VideoStreamSettings.FALLBACK_RESOLUTION,
-                            modifier = Modifier.weight(1f),
-                            onClick = { resolution = VideoStreamSettings.FALLBACK_RESOLUTION }
-                        )
-                        ProfileChip(
-                            title = "HD",
-                            selected = resolution == VideoStreamSettings.HD_RESOLUTION,
-                            modifier = Modifier.weight(1f),
-                            onClick = { resolution = VideoStreamSettings.HD_RESOLUTION }
-                        )
-                    }
-                    Text(
-                        text = stringResource(R.string.settings_stream_resolution_hint),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    OutlinedTextField(
-                        value = qualityInput,
-                        onValueChange = {
-                            val filtered = it.filter(Char::isDigit).take(2)
-                            val numeric = filtered.toIntOrNull()
-                            qualityInput = when {
-                                filtered.isEmpty() -> ""
-                                numeric == null -> qualityInput
-                                numeric > 63 -> "63"
-                                else -> filtered
-                            }
-                        },
-                        label = { Text(stringResource(R.string.settings_jpeg_quality)) },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        enabled = supportsDeviceControl,
-                        supportingText = {
-                            Text(stringResource(R.string.settings_jpeg_quality_hint))
-                        },
-                        colors = textFieldColors
-                    )
                 }
 
                 if (supportsDeviceControl) {
@@ -489,73 +454,149 @@ fun VideoStreamSettingsDialog(
                     }
                 }
 
-                SettingsGroup(title = stringResource(R.string.settings_lighting_section)) {
-                    SettingSwitch(
-                        label = stringResource(R.string.settings_led_control),
-                        checked = ledControlEnabled,
-                        enabled = supportsDeviceControl,
-                        onCheckedChange = { ledControlEnabled = it }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { advancedExpanded = !advancedExpanded }
+                        .padding(vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "高级设置",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Medium
                     )
-                    SettingSwitch(
-                        label = stringResource(R.string.settings_auto_light),
-                        checked = ledAutoLightEnabled,
-                        enabled = supportsDeviceControl && ledControlEnabled,
-                        onCheckedChange = { ledAutoLightEnabled = it }
-                    )
-                    OutlinedTextField(
-                        value = ledTargetBrightness,
-                        onValueChange = {
-                            val filtered = it.filter(Char::isDigit)
-                            ledTargetBrightness = (filtered.toIntOrNull() ?: 100).coerceIn(0, 255).toString()
-                        },
-                        label = { Text(stringResource(R.string.settings_target_brightness)) },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        enabled = supportsDeviceControl && ledControlEnabled && ledAutoLightEnabled,
-                        colors = textFieldColors
+                    Icon(
+                        imageVector = if (advancedExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
 
-                SettingsGroup(title = stringResource(R.string.settings_execution_section)) {
-                    SettingSwitch(
-                        label = stringResource(R.string.settings_change_detection),
-                        checked = changeDetectionEnabled,
-                        onCheckedChange = { changeDetectionEnabled = it }
-                    )
-                    OutlinedTextField(
-                        value = changeThresholdPercent,
-                        onValueChange = {
-                            val filtered = it.filter(Char::isDigit)
-                            changeThresholdPercent = (
-                                filtered.toIntOrNull()
-                                    ?: VideoStreamSettings.DEFAULT_CHANGE_THRESHOLD_PERCENT
-                                ).coerceIn(1, 100).toString()
-                        },
-                        label = { Text(stringResource(R.string.settings_change_threshold)) },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        enabled = changeDetectionEnabled,
-                        colors = textFieldColors
-                    )
-                    OutlinedTextField(
-                        value = notificationCooldownSeconds,
-                        onValueChange = {
-                            val filtered = it.filter(Char::isDigit)
-                            notificationCooldownSeconds = (filtered.toIntOrNull() ?: 20).coerceIn(5, 300).toString()
-                        },
-                        label = { Text(stringResource(R.string.settings_alert_cooldown)) },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        colors = textFieldColors
-                    )
-                    SettingSwitch(
-                        label = "视频分析流式输出",
-                        checked = videoAnalysisStreamingEnabled,
-                        onCheckedChange = { videoAnalysisStreamingEnabled = it }
-                    )
+                AnimatedVisibility(visible = advancedExpanded) {
+                    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                        SettingsGroup(title = "画质") {
+                            Text(
+                                text = stringResource(R.string.settings_stream_resolution),
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                ProfileChip(
+                                    title = "VGA",
+                                    selected = resolution == VideoStreamSettings.FALLBACK_RESOLUTION,
+                                    modifier = Modifier.weight(1f),
+                                    onClick = { resolution = VideoStreamSettings.FALLBACK_RESOLUTION }
+                                )
+                                ProfileChip(
+                                    title = "HD",
+                                    selected = resolution == VideoStreamSettings.HD_RESOLUTION,
+                                    modifier = Modifier.weight(1f),
+                                    onClick = { resolution = VideoStreamSettings.HD_RESOLUTION }
+                                )
+                            }
+                            Text(
+                                text = stringResource(R.string.settings_stream_resolution_hint),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            OutlinedTextField(
+                                value = qualityInput,
+                                onValueChange = {
+                                    val filtered = it.filter(Char::isDigit).take(2)
+                                    val numeric = filtered.toIntOrNull()
+                                    qualityInput = when {
+                                        filtered.isEmpty() -> ""
+                                        numeric == null -> qualityInput
+                                        numeric > 63 -> "63"
+                                        else -> filtered
+                                    }
+                                },
+                                label = { Text(stringResource(R.string.settings_jpeg_quality)) },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true,
+                                enabled = supportsDeviceControl,
+                                supportingText = {
+                                    Text(stringResource(R.string.settings_jpeg_quality_hint))
+                                },
+                                colors = textFieldColors
+                            )
+                        }
+
+                        SettingsGroup(title = stringResource(R.string.settings_lighting_section)) {
+                            SettingSwitch(
+                                label = stringResource(R.string.settings_led_control),
+                                checked = ledControlEnabled,
+                                enabled = supportsDeviceControl,
+                                onCheckedChange = { ledControlEnabled = it }
+                            )
+                            SettingSwitch(
+                                label = stringResource(R.string.settings_auto_light),
+                                checked = ledAutoLightEnabled,
+                                enabled = supportsDeviceControl && ledControlEnabled,
+                                onCheckedChange = { ledAutoLightEnabled = it }
+                            )
+                            OutlinedTextField(
+                                value = ledTargetBrightness,
+                                onValueChange = {
+                                    val filtered = it.filter(Char::isDigit)
+                                    ledTargetBrightness = (filtered.toIntOrNull() ?: 100).coerceIn(0, 255).toString()
+                                },
+                                label = { Text(stringResource(R.string.settings_target_brightness)) },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true,
+                                enabled = supportsDeviceControl && ledControlEnabled && ledAutoLightEnabled,
+                                colors = textFieldColors
+                            )
+                        }
+
+                        SettingsGroup(title = stringResource(R.string.settings_execution_section)) {
+                            SettingSwitch(
+                                label = stringResource(R.string.settings_change_detection),
+                                checked = changeDetectionEnabled,
+                                onCheckedChange = { changeDetectionEnabled = it }
+                            )
+                            OutlinedTextField(
+                                value = changeThresholdPercent,
+                                onValueChange = {
+                                    val filtered = it.filter(Char::isDigit)
+                                    changeThresholdPercent = (
+                                        filtered.toIntOrNull()
+                                            ?: VideoStreamSettings.DEFAULT_CHANGE_THRESHOLD_PERCENT
+                                        ).coerceIn(1, 100).toString()
+                                },
+                                label = { Text(stringResource(R.string.settings_change_threshold)) },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true,
+                                enabled = changeDetectionEnabled,
+                                colors = textFieldColors
+                            )
+                            OutlinedTextField(
+                                value = notificationCooldownSeconds,
+                                onValueChange = {
+                                    val filtered = it.filter(Char::isDigit)
+                                    notificationCooldownSeconds = (filtered.toIntOrNull() ?: 20).coerceIn(5, 300).toString()
+                                },
+                                label = { Text(stringResource(R.string.settings_alert_cooldown)) },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true,
+                                colors = textFieldColors
+                            )
+                            SettingSwitch(
+                                label = "视频分析流式输出",
+                                checked = videoAnalysisStreamingEnabled,
+                                onCheckedChange = { videoAnalysisStreamingEnabled = it }
+                            )
+                        }
+                    }
                 }
             }
         },

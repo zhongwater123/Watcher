@@ -1,8 +1,9 @@
-package com.example.watcher.ui.viewmodel
+﻿package com.example.watcher.ui.viewmodel
 
 import android.content.Context
 import android.graphics.Bitmap
 import com.example.watcher.R
+import com.example.watcher.WatcherForegroundService
 import com.example.watcher.data.model.TimelineEventEntity
 import com.example.watcher.data.model.VideoProcessTask
 import com.example.watcher.data.model.VideoProcessTaskDraft
@@ -59,10 +60,10 @@ internal class VideoWorkflowController(
                     )
                 }
                 .onFailure { error ->
-                    _videoPlanUiState.value = VideoPlanUiState.Error(error.message ?: "视频规划失败")
+                    _videoPlanUiState.value = VideoPlanUiState.Error(error.message ?: "瑙嗛瑙勫垝澶辫触")
                     _videoProcessingStatus.value = VideoProcessingStatus(
                         stage = VideoRunStatus.Failed,
-                        message = "视频规划失败",
+                        message = "瑙嗛瑙勫垝澶辫触",
                         errorMessage = error.message,
                         isBusy = false
                     )
@@ -83,7 +84,18 @@ internal class VideoWorkflowController(
 
     fun saveVideoTask(draft: VideoProcessTaskDraft) {
         scope.launch {
-            runCatching { videoRepository.saveTask(draft) }
+            val normalized = draft.normalized()
+            _currentVideoTask.value = normalized
+            _videoPlanUiState.value = VideoPlanUiState.Success(normalized)
+            _videoProcessingStatus.value = _videoProcessingStatus.value.copy(
+                stage = VideoRunStatus.AwaitingConfirmation,
+                activeTask = normalized,
+                message = "淇濆瓨涓?..",
+                errorMessage = null,
+                isTaskSaving = true,
+                isBusy = false
+            )
+            runCatching { videoRepository.saveTask(normalized) }
                 .onSuccess { saved ->
                     showVideoDraftReady(
                         draft = saved,
@@ -91,7 +103,14 @@ internal class VideoWorkflowController(
                     )
                 }
                 .onFailure { error ->
-                    _videoPlanUiState.value = VideoPlanUiState.Error(error.message ?: "视频任务保存失败")
+                    _videoPlanUiState.value = VideoPlanUiState.Error(error.message ?: "瑙嗛浠诲姟淇濆瓨澶辫触")
+                    _videoProcessingStatus.value = _videoProcessingStatus.value.copy(
+                        activeTask = normalized,
+                        message = "保存失败",
+                        errorMessage = error.message,
+                        isTaskSaving = false,
+                        isBusy = false
+                    )
                 }
         }
     }
@@ -134,6 +153,7 @@ internal class VideoWorkflowController(
         launchedJob = scope.launch {
             var activeRunId: Long? = null
             try {
+                WatcherForegroundService.start(appContext, "视频分析进行中")
                 showVideoExecutionStarting(draft, effectiveStreamingEnabled)
                 val result = videoRepository.executeTask(
                     draft = draft,
@@ -162,6 +182,7 @@ internal class VideoWorkflowController(
                     error = error
                 )
             } finally {
+                WatcherForegroundService.stop(appContext)
                 clearVideoProcessingJobIfMatches(launchedJob)
             }
         }
@@ -191,7 +212,7 @@ internal class VideoWorkflowController(
         selectedVideoRunIdState.value = null
         _videoProcessingStatus.value = VideoProcessingStatus(
             stage = VideoRunStatus.Planning,
-            message = "正在生成视频任务规划",
+            message = "姝ｅ湪鐢熸垚瑙嗛浠诲姟瑙勫垝",
             isBusy = true
         )
     }
@@ -206,6 +227,10 @@ internal class VideoWorkflowController(
         draft: VideoProcessTaskDraft,
         streamingEnabled: Boolean
     ) {
+        val hasMicPermission = androidx.core.content.ContextCompat.checkSelfPermission(
+            appContext,
+            android.Manifest.permission.RECORD_AUDIO
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
         _videoProcessingStatus.value = VideoProcessingStatus(
             stage = VideoRunStatus.Recording,
             activeTask = draft,
@@ -222,7 +247,13 @@ internal class VideoWorkflowController(
             isAnalysisActive = false,
             recordingSegmentIndex = 1,
             remainingDurationSeconds = draft.plannedDurationSeconds,
-            isBusy = true
+            speechInputEnabled = false,
+            isSpeechActive = false,
+            isSpeechListening = false,
+            speechErrorMessage = null,
+            recentSpeech = emptyList(),
+            isBusy = true,
+            micPermissionGranted = hasMicPermission
         )
     }
 
@@ -250,7 +281,8 @@ internal class VideoWorkflowController(
             isRecordingActive = false,
             isAnalysisActive = false,
             activeStreamingSegmentIndex = 0,
-            isBusy = false
+            isBusy = false,
+            isTaskSaving = false
         )
     }
 
@@ -275,8 +307,8 @@ internal class VideoWorkflowController(
         }
         _videoProcessingStatus.value = _videoProcessingStatus.value.copy(
             stage = VideoRunStatus.Failed,
-            message = error.message ?: "执行失败",
-            errorMessage = error.message ?: "执行失败",
+            message = error.message ?: "鎵ц澶辫触",
+            errorMessage = error.message ?: "鎵ц澶辫触",
             isStreamingActive = false,
             isRecordingActive = false,
             isAnalysisActive = false,
@@ -294,7 +326,7 @@ internal class VideoWorkflowController(
     private fun resetVideoProcessingJob() {
         videoStopRequested.set(true)
         videoProcessingJob?.cancel()
-        videoStopRequested = AtomicBoolean(false)
+        videoStopRequested.set(false)
     }
 
     private fun clearSelectedVideoTaskState() {
@@ -337,11 +369,23 @@ internal class VideoWorkflowController(
             recordedDurationSeconds = update.recordedDurationSeconds,
             remainingDurationSeconds = update.remainingDurationSeconds,
             nextCaptureInSeconds = update.nextCaptureInSeconds,
-            stopRequested = update.stopRequested,
+            stopRequested = if (update.stage in TERMINAL_VIDEO_STAGES) {
+                false
+            } else {
+                previousStatus.stopRequested || update.stopRequested
+            },
             segmentFeedbacks = update.segmentFeedbacks.takeIf(List<*>::isNotEmpty)
                 ?: previousStatus.segmentFeedbacks,
+            speechInputEnabled = false,
+            isSpeechActive = false,
+            isSpeechListening = false,
+            speechErrorMessage = null,
+            recentSpeech = emptyList(),
             errorMessage = update.errorMessage,
-            isBusy = update.stage !in TERMINAL_VIDEO_STAGES
+            isBusy = update.stage !in TERMINAL_VIDEO_STAGES,
+            isTaskSaving = false,
+            currentSegmentHasAudio = update.currentSegmentHasAudio ?: previousStatus.currentSegmentHasAudio,
+            segmentAudioResults = update.segmentAudioResults ?: previousStatus.segmentAudioResults
         )
     }
 
@@ -374,6 +418,11 @@ internal class VideoWorkflowController(
             nextCaptureInSeconds = 0,
             stopRequested = false,
             segmentFeedbacks = emptyList(),
+            speechInputEnabled = false,
+            isSpeechActive = false,
+            isSpeechListening = false,
+            speechErrorMessage = null,
+            recentSpeech = emptyList(),
             message = message,
             errorMessage = null,
             isBusy = false
@@ -383,6 +432,7 @@ internal class VideoWorkflowController(
     private companion object {
         val TERMINAL_VIDEO_STAGES = setOf(
             VideoRunStatus.Completed,
+            VideoRunStatus.CompletedDegraded,
             VideoRunStatus.Failed,
             VideoRunStatus.Cancelled
         )

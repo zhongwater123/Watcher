@@ -12,6 +12,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.ContentPaste
+import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
@@ -25,6 +27,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import com.example.watcher.data.repository.ProviderConnectivitySnapshot
 import com.example.watcher.ui.viewmodel.ApiWalletDraft
@@ -48,9 +52,35 @@ fun ApiWalletScreen(
     onSetDefault: (String) -> Unit,
     onToggleEnabled: (String, Boolean) -> Unit,
     onDeleteProvider: (String) -> Unit,
-    onClearMessage: () -> Unit
+    onClearMessage: () -> Unit,
+    onShowImportDialog: () -> Unit = {},
+    onDismissImportDialog: () -> Unit = {},
+    onImportFromText: (String) -> Unit = {},
+    onRequestExport: (String?) -> Unit = {},
+    onConfirmExport: () -> String? = { null },
+    onDismissExportWarning: () -> Unit = {}
 ) {
     val snackbarHostState = remember { SnackbarHostState() }
+    val clipboardManager = LocalClipboardManager.current
+
+    if (uiState.showImportDialog) {
+        WalletImportDialog(
+            onDismiss = onDismissImportDialog,
+            onImport = onImportFromText
+        )
+    }
+
+    if (uiState.showExportWarning) {
+        WalletExportWarningDialog(
+            onConfirm = {
+                val json = onConfirmExport()
+                if (json != null) {
+                    clipboardManager.setText(AnnotatedString(json))
+                }
+            },
+            onDismiss = onDismissExportWarning
+        )
+    }
 
     LaunchedEffect(uiState.statusMessage, uiState.errorMessage) {
         val message = uiState.errorMessage ?: uiState.statusMessage
@@ -71,6 +101,12 @@ fun ApiWalletScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = { onRequestExport(null) }) {
+                        Icon(Icons.Default.FileUpload, contentDescription = "导出全部配置")
+                    }
+                    IconButton(onClick = onShowImportDialog) {
+                        Icon(Icons.Default.ContentPaste, contentDescription = "导入配置")
+                    }
                     IconButton(onClick = onStartCreate) {
                         Icon(Icons.Default.Add, contentDescription = "新增供应商")
                     }
@@ -124,15 +160,16 @@ fun ApiWalletScreen(
                         onTest = { onTestProvider(provider.id) },
                         onDelete = { onDeleteProvider(provider.id) },
                         onSetDefault = { onSetDefault(provider.id) },
-                        onToggleEnabled = { enabled -> onToggleEnabled(provider.id, enabled) }
+                        onToggleEnabled = { enabled -> onToggleEnabled(provider.id, enabled) },
+                        onExport = { onRequestExport(provider.id) }
                     )
                 }
             }
 
             item {
                 SectionTitle(
-                    title = "直播语音识别",
-                    subtitle = "这部分只服务 Live / Council 模式，和上面的 LLM 供应商钱包分开管理。"
+                    title = "语音识别（ASR）",
+                    subtitle = "服务于 Live、Council 和视频分析中的语音输入，和上面的 LLM 供应商钱包分开管理。"
                 )
             }
 

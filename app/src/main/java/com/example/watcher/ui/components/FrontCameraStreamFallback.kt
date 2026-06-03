@@ -31,8 +31,16 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
 internal const val FRONT_CAMERA_SOURCE_LABEL = "手机前置摄像头（降级）"
+internal const val BACK_CAMERA_SOURCE_LABEL = "手机后置摄像头（降级）"
 
-internal data class FrontCameraFallbackState(
+enum class CameraFallbackLens { Front, Back }
+
+internal fun cameraSourceLabel(lens: CameraFallbackLens): String = when (lens) {
+    CameraFallbackLens.Front -> FRONT_CAMERA_SOURCE_LABEL
+    CameraFallbackLens.Back -> BACK_CAMERA_SOURCE_LABEL
+}
+
+internal data class CameraFallbackState(
     val currentFrame: Bitmap? = null,
     val connectionStatus: ConnectionStatus = ConnectionStatus.Disconnected,
     val fps: Int = 0,
@@ -40,12 +48,16 @@ internal data class FrontCameraFallbackState(
     val permissionDenied: Boolean = false
 )
 
+@Deprecated("Use CameraFallbackState", ReplaceWith("CameraFallbackState"))
+internal typealias FrontCameraFallbackState = CameraFallbackState
+
 @Composable
-internal fun rememberFrontCameraFallbackState(
+internal fun rememberCameraFallbackState(
     active: Boolean,
+    lens: CameraFallbackLens = CameraFallbackLens.Front,
     reconnectToken: Int,
     onFrameUpdate: (Bitmap?) -> Unit = {}
-): FrontCameraFallbackState {
+): CameraFallbackState {
     val context = LocalContext.current
     val configuration = LocalConfiguration.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -72,8 +84,9 @@ internal fun rememberFrontCameraFallbackState(
         if (!granted) {
             currentFrame = null
             fps = 0
+            val cameraName = if (lens == CameraFallbackLens.Front) "前置" else "后置"
             connectionStatus = ConnectionStatus.Error(
-                "ESP32 视频流不可用，且相机权限未授予，无法切换到手机前置摄像头。"
+                "ESP32 视频流不可用，且相机权限未授予，无法切换到手机${cameraName}摄像头。"
             )
             onFrameUpdate(null)
         }
@@ -104,6 +117,7 @@ internal fun rememberFrontCameraFallbackState(
     DisposableEffect(
         active,
         hasPermission,
+        lens,
         reconnectToken,
         lifecycleOwner,
         configuration.orientation,
@@ -145,17 +159,22 @@ internal fun rememberFrontCameraFallbackState(
                         }
                     }
 
+                    val cameraSelector = when (lens) {
+                        CameraFallbackLens.Front -> CameraSelector.DEFAULT_FRONT_CAMERA
+                        CameraFallbackLens.Back -> CameraSelector.DEFAULT_BACK_CAMERA
+                    }
                     provider.unbindAll()
                     provider.bindToLifecycle(
                         lifecycleOwner,
-                        CameraSelector.DEFAULT_FRONT_CAMERA,
+                        cameraSelector,
                         analysis
                     )
                     cameraProvider = provider
                 }.onFailure { error ->
-                    Log.e("FrontCameraFallback", "Failed to start front camera fallback", error)
+                    val cameraName = if (lens == CameraFallbackLens.Front) "前置" else "后置"
+                    Log.e("CameraFallback", "Failed to start $cameraName camera fallback", error)
                     connectionStatus = ConnectionStatus.Error(
-                        error.message ?: "手机前置摄像头启动失败。"
+                        error.message ?: "手机${cameraName}摄像头启动失败。"
                     )
                     currentFrame = null
                     fps = 0
@@ -175,10 +194,11 @@ internal fun rememberFrontCameraFallbackState(
         }
     }
 
-    return FrontCameraFallbackState(
+    return CameraFallbackState(
         currentFrame = currentFrame,
         connectionStatus = connectionStatus,
         fps = fps,
+        sourceLabel = cameraSourceLabel(lens),
         permissionDenied = permissionDenied
     )
 }

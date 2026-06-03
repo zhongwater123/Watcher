@@ -58,6 +58,12 @@ private fun ApiWalletRoute(
         onSetDefault = viewModel::setDefaultProvider,
         onToggleEnabled = viewModel::setProviderEnabled,
         onDeleteProvider = viewModel::deleteProvider,
-        onClearMessage = viewModel::clearMessage
+        onClearMessage = viewModel::clearMessage,
+        onShowImportDialog = viewModel::showImportDialog,
+        onDismissImportDialog = viewModel::dismissImportDialog,
+        onImportFromText = viewModel::importFromText,
+        onRequestExport = viewModel::requestExportProvider,
+        onConfirmExport = viewModel::confirmExport,
+        onDismissExportWarning = viewModel::dismissExportWarning
     )
 }

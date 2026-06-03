@@ -22,9 +22,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Videocam
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilledTonalIconButton
@@ -32,11 +34,13 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -71,13 +75,20 @@ data class MjpegStreamUiState(
     val fps: Int = 0,
     val activeStreamUrl: String? = null,
     val source: StreamSource = StreamSource.None,
-    val sourceLabel: String = ""
+    val sourceLabel: String = "",
+    val showCameraChooser: Boolean = false,
+    val chooseCameraLens: (CameraFallbackLens) -> Unit = {},
+    val requestSwitchCamera: () -> Unit = {}
 )
 
 enum class StreamSource {
     None,
     RemoteMjpeg,
-    FrontCameraFallback
+    FrontCameraFallback,
+    BackCameraFallback;
+
+    val isCameraFallback: Boolean
+        get() = this == FrontCameraFallback || this == BackCameraFallback
 }
 
 private const val REMOTE_STREAM_RETRY_ATTEMPTS = 3
@@ -99,9 +110,12 @@ fun rememberMjpegStreamState(
     var source by remember { mutableStateOf(StreamSource.None) }
     var sourceLabel by remember { mutableStateOf("") }
     var fallbackRequested by remember { mutableStateOf(false) }
+    var showCameraChooser by remember { mutableStateOf(false) }
+    var selectedLens by rememberSaveable { mutableStateOf(CameraFallbackLens.Front) }
 
-    val fallbackState = rememberFrontCameraFallbackState(
-        active = isPlaying && fallbackRequested,
+    val fallbackState = rememberCameraFallbackState(
+        active = isPlaying && fallbackRequested && !showCameraChooser,
+        lens = selectedLens,
         reconnectToken = reconnectToken,
         onFrameUpdate = onFrameUpdate
     )
@@ -263,19 +277,10 @@ fun rememberMjpegStreamState(
                 withContext(Dispatchers.Main) {
                     if (shouldUseFallback) {
                         onRemoteStreamUnavailable()
-                        fallbackRequested = true
+                        showCameraChooser = true
                         currentFrame = null
                         fps = 0
-                        activeStreamUrl = FRONT_CAMERA_SOURCE_LABEL
-                        source = StreamSource.FrontCameraFallback
-                        sourceLabel = FRONT_CAMERA_SOURCE_LABEL
-                        connectionStatus = if (fallbackState.permissionDenied) {
-                            ConnectionStatus.Error(
-                                "ESP32 视频流不可用，且前置摄像头权限未授予。"
-                            )
-                        } else {
-                            ConnectionStatus.Connecting
-                        }
+                        connectionStatus = ConnectionStatus.Connecting
                         onFrameUpdate(null)
                     } else {
                         currentFrame = null
@@ -293,7 +298,7 @@ fun rememberMjpegStreamState(
         }
     }
 
-    LaunchedEffect(fallbackRequested, fallbackState) {
+    LaunchedEffect(fallbackRequested, fallbackState, selectedLens) {
         if (!fallbackRequested) {
             return@LaunchedEffect
         }
@@ -301,7 +306,10 @@ fun rememberMjpegStreamState(
         connectionStatus = fallbackState.connectionStatus
         fps = fallbackState.fps
         activeStreamUrl = fallbackState.sourceLabel
-        source = StreamSource.FrontCameraFallback
+        source = when (selectedLens) {
+            CameraFallbackLens.Front -> StreamSource.FrontCameraFallback
+            CameraFallbackLens.Back -> StreamSource.BackCameraFallback
+        }
         sourceLabel = fallbackState.sourceLabel
     }
 
@@ -311,7 +319,24 @@ fun rememberMjpegStreamState(
         fps = fps,
         activeStreamUrl = activeStreamUrl,
         source = source,
-        sourceLabel = sourceLabel
+        sourceLabel = sourceLabel,
+        showCameraChooser = showCameraChooser,
+        chooseCameraLens = { lens ->
+            selectedLens = lens
+            showCameraChooser = false
+            fallbackRequested = true
+            val chosenLabel = cameraSourceLabel(lens)
+            activeStreamUrl = chosenLabel
+            source = when (lens) {
+                CameraFallbackLens.Front -> StreamSource.FrontCameraFallback
+                CameraFallbackLens.Back -> StreamSource.BackCameraFallback
+            }
+            sourceLabel = chosenLabel
+            connectionStatus = ConnectionStatus.Connecting
+        },
+        requestSwitchCamera = {
+            showCameraChooser = true
+        }
     )
 }
 
@@ -333,6 +358,24 @@ fun MjpegStreamPlayer(
         onStreamSourceChanged = onStreamSourceChanged,
         onRemoteStreamUnavailable = onRemoteStreamUnavailable
     )
+
+    if (streamState.showCameraChooser) {
+        AlertDialog(
+            onDismissRequest = { streamState.chooseCameraLens(CameraFallbackLens.Front) },
+            title = { Text("选择摄像头") },
+            text = { Text("ESP32 视频流不可用，请选择降级画面来源：") },
+            confirmButton = {
+                TextButton(onClick = { streamState.chooseCameraLens(CameraFallbackLens.Front) }) {
+                    Text("前置摄像头")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { streamState.chooseCameraLens(CameraFallbackLens.Back) }) {
+                    Text("后置摄像头")
+                }
+            }
+        )
+    }
 
     val connectionAccent = when (streamState.connectionStatus) {
         ConnectionStatus.Connected -> MaterialTheme.colorScheme.tertiary
@@ -449,6 +492,16 @@ fun MjpegStreamPlayer(
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        if (streamState.source.isCameraFallback) {
+                            FilledTonalIconButton(
+                                onClick = { streamState.requestSwitchCamera() }
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Cameraswitch,
+                                    contentDescription = "切换摄像头"
+                                )
+                            }
+                        }
                         FilledTonalIconButton(
                             enabled = streamState.currentFrame != null,
                             onClick = { streamState.currentFrame?.let(onFrameCaptured) }
@@ -476,8 +529,9 @@ fun MjpegStreamPlayer(
                 Text(
                     text = buildString {
                         append(stringResource(R.string.stream_fps, streamState.fps))
-                        if (streamState.source == StreamSource.FrontCameraFallback) {
-                            append(" · 前摄降级")
+                        if (streamState.source.isCameraFallback) {
+                            val badge = if (streamState.source == StreamSource.FrontCameraFallback) "前摄降级" else "后摄降级"
+                            append(" · $badge")
                         }
                     },
                     style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),

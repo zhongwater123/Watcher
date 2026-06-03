@@ -72,6 +72,11 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
 import com.example.watcher.ui.screens.HubPage
 import com.example.watcher.ui.theme.LocalWatcherExtendedColors
+import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
+import android.content.Context
 import androidx.core.view.HapticFeedbackConstantsCompat
 import androidx.core.view.ViewCompat
 import kotlinx.coroutines.Job
@@ -340,10 +345,7 @@ internal fun ConciseModeToggleChip(
                     interactionSource = interactionSource,
                     indication = null
                 ) {
-                    ViewCompat.performHapticFeedback(
-                        view,
-                        HapticFeedbackConstantsCompat.CONTEXT_CLICK
-                    )
+                    performPenClickHaptic(view)
                     onToggle()
                 }
         ) {
@@ -924,4 +926,30 @@ private fun findSnapTarget(
     } else {
         null
     }
+}
+
+/**
+ * Pen-click haptic: CLICK (press) + TICK (rebound) in quick succession.
+ */
+private fun performPenClickHaptic(view: android.view.View) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val mgr = view.context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
+            mgr?.defaultVibrator
+        } else {
+            @Suppress("DEPRECATION")
+            view.context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+        }
+        if (vibrator?.hasVibrator() == true) {
+            // CLICK first, then TICK after 30ms gap for the "rebound" feel
+            val click = VibrationEffect.createPredefined(VibrationEffect.EFFECT_CLICK)
+            vibrator.vibrate(click)
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                val tick = VibrationEffect.createPredefined(VibrationEffect.EFFECT_TICK)
+                vibrator.vibrate(tick)
+            }, 30)
+            return
+        }
+    }
+    ViewCompat.performHapticFeedback(view, HapticFeedbackConstantsCompat.CONTEXT_CLICK)
 }

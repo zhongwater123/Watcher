@@ -29,6 +29,7 @@ import com.example.watcher.data.model.VideoTaskTemplates
 import com.example.watcher.data.model.VideoTemplateEntity
 import com.example.watcher.data.model.toMonitorTaskTemplate
 import com.example.watcher.data.model.toVideoTaskTemplate
+import com.example.watcher.data.gateway.GatewayRuntimeStatus
 import com.example.watcher.data.remote.RetrofitClient
 import com.example.watcher.data.repository.AndroidAlertNotifier
 import com.example.watcher.data.repository.AppUpdatePrompt
@@ -121,6 +122,9 @@ class IntentViewModel(application: Application) : AndroidViewModel(application) 
         taskDao = database.videoProcessTaskDao(),
         runDao = database.videoProcessRunDao(),
         segmentRunDao = database.videoSegmentRunDao(),
+        audioAssetDao = database.videoAudioAssetDao(),
+        remoteFileBindingDao = database.videoRemoteFileBindingDao(),
+        speechTranscriptDao = database.videoSpeechTranscriptDao(),
         timelineEventDao = database.timelineEventDao(),
         llmWalletRepository = llmWalletRepository
     )
@@ -128,8 +132,13 @@ class IntentViewModel(application: Application) : AndroidViewModel(application) 
         monitorRunDao = database.monitorRunDao(),
         monitorEventDao = database.monitorEventDao(),
         monitorMediaDao = database.monitorMediaDao(),
+        monitorTaskDao = database.monitorTaskDao(),
+        videoProcessTaskDao = database.videoProcessTaskDao(),
         videoRunDao = database.videoProcessRunDao(),
         videoSegmentRunDao = database.videoSegmentRunDao(),
+        videoAudioAssetDao = database.videoAudioAssetDao(),
+        videoRemoteFileBindingDao = database.videoRemoteFileBindingDao(),
+        videoSpeechTranscriptDao = database.videoSpeechTranscriptDao(),
         timelineEventDao = database.timelineEventDao()
     )
     private val migrationPreferences = appContext.getSharedPreferences(
@@ -260,6 +269,7 @@ class IntentViewModel(application: Application) : AndroidViewModel(application) 
         onStreamReclaim = { reconnectStream() }
     )
     val gatewayRunning: StateFlow<Boolean> get() = gatewayDelegate.running
+    val gatewayStatus: StateFlow<GatewayRuntimeStatus> get() = gatewayDelegate.status
     val gatewayApiKey: String get() = gatewayDelegate.apiKey
     val gatewayPort: Int get() = gatewayDelegate.port
     fun toggleGateway(enabled: Boolean) = gatewayDelegate.toggle(enabled)

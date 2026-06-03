@@ -15,6 +15,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Analytics
+import androidx.compose.material.icons.filled.Accessibility
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material3.Button
@@ -67,6 +68,7 @@ internal fun HubOverviewPage(
     onNavigateAnalysis: () -> Unit,
     onNavigateDigitalLifeCard: () -> Unit,
     onNavigateLiteRt: () -> Unit,
+    onNavigatePoseEstimation: () -> Unit,
     currentPage: HubPage,
     pageOffset: Float
 ) {
@@ -140,6 +142,10 @@ internal fun HubOverviewPage(
 
         MotionStageSection(pageOffset = pageOffset, depth = MotionDepth.Footer) {
             LiteRtEntryCard(onClick = onNavigateLiteRt)
+        }
+
+        MotionStageSection(pageOffset = pageOffset, depth = MotionDepth.Footer) {
+            PoseEstimationEntryCard(onClick = onNavigatePoseEstimation)
         }
     }
 }
@@ -388,6 +394,79 @@ private fun LiteRtEntryCard(
             Icon(
                 imageVector = Icons.Default.ArrowForward,
                 contentDescription = "进入本地大模型工作台",
+                tint = MaterialTheme.colorScheme.primary
+            )
+        }
+    }
+}
+
+@Composable
+private fun PoseEstimationEntryCard(
+    onClick: () -> Unit
+) {
+    val extendedColors = LocalWatcherExtendedColors.current
+
+    WatcherCard(onClick = onClick) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.Top
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "独立工作区 / 姿态识别",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.tertiary
+                )
+                Text(
+                    text = "Pose Estimation",
+                    style = MaterialTheme.typography.headlineSmall
+                )
+                Text(
+                    text = "基于 MediaPipe BlazePose 的实时全身关节追踪，支持多人检测与 3D 坐标。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Surface(
+                shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp),
+                color = extendedColors.surfaceContainer
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Accessibility,
+                    contentDescription = null,
+                    modifier = Modifier.padding(14.dp),
+                    tint = MaterialTheme.colorScheme.tertiary
+                )
+            }
+        }
+
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            StatusPill(text = "33 关键点", accent = MaterialTheme.colorScheme.tertiary)
+            StatusPill(text = "3D 坐标", accent = MaterialTheme.colorScheme.primary)
+            StatusPill(text = "多人支持", accent = Color(0xFF0E8B65))
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "进入验证",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Icon(
+                imageVector = Icons.Default.ArrowForward,
+                contentDescription = "进入姿态识别验证",
                 tint = MaterialTheme.colorScheme.primary
             )
         }
