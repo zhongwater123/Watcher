@@ -1,5 +1,6 @@
 package com.example.watcher.data.repository
 
+import android.util.Log
 import com.example.watcher.data.local.VideoSegmentRunDao
 import com.example.watcher.data.model.VideoAnalysisResult
 import com.example.watcher.data.model.VideoProcessTaskDraft
@@ -12,6 +13,8 @@ import kotlinx.coroutines.delay
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicInteger
+
+private const val TAG = "Watcher.Video.Processor"
 
 /**
  * Coordinates the lifecycle of a single recorded segment:
@@ -88,14 +91,21 @@ internal class VideoSegmentProcessor(
             if (!isMergedSegmentVideo && recordedSegment.audioAssetPath != null) {
                 val audioFile = File(recordedSegment.audioAssetPath)
                 if (audioFile.exists() && audioFile.length() > 0L) {
+                    // Wait briefly for file I/O to settle after recording
+                    delay(500L)
+                    val videoFileReady = recordedSegment.file.exists() && recordedSegment.file.length() > 0L
+                    Log.d(TAG, "Segment ${recordedSegment.segmentNumber} merge attempt: video=${recordedSegment.file.name}(${recordedSegment.file.length()}) audio=${audioFile.name}(${audioFile.length()}) videoReady=$videoFileReady")
                     val mergedFile = File(
                         recordedSegment.file.parentFile,
                         recordedSegment.file.nameWithoutExtension + "_merged.mp4"
                     )
                     val merged = runCatching {
                         AudioSegmentSlicer().mergeVideoAndAudio(recordedSegment.file, audioFile, mergedFile)
+                    }.onFailure { error ->
+                        Log.e(TAG, "Segment ${recordedSegment.segmentNumber} merge FAILED: ${error.message}", error)
                     }.getOrDefault(false)
                     if (merged && mergedFile.exists() && mergedFile.length() > 0L) {
+                        Log.d(TAG, "Segment ${recordedSegment.segmentNumber} merge SUCCESS: ${mergedFile.name}(${mergedFile.length()})")
                         remoteFileResolver.recordLocalFileBinding(
                             file = mergedFile,
                             runId = runId,
@@ -105,7 +115,11 @@ internal class VideoSegmentProcessor(
                         )
                         analysisFile = mergedFile
                         isMergedSegmentVideo = true
+                    } else {
+                        Log.w(TAG, "Segment ${recordedSegment.segmentNumber} merge produced no valid file, using video-only. merged=$merged exists=${mergedFile.exists()} size=${mergedFile.length()}")
                     }
+                } else {
+                    Log.w(TAG, "Segment ${recordedSegment.segmentNumber} audio file missing or empty: path=${recordedSegment.audioAssetPath} exists=${audioFile.exists()} size=${audioFile.length()}")
                 }
             }
 
@@ -113,6 +127,8 @@ internal class VideoSegmentProcessor(
                 VideoRemoteAssetKind.MergedSegmentVideo
             else
                 VideoRemoteAssetKind.SegmentVideo
+
+            Log.d(TAG, "Segment ${recordedSegment.segmentNumber} uploading file=${analysisFile.name} size=${analysisFile.length()} isMerged=$isMergedSegmentVideo kind=$effectiveAssetKind")
 
             val remoteFile = try {
                 remoteFileResolver.resolveVideoFile(
@@ -133,6 +149,7 @@ internal class VideoSegmentProcessor(
             }
 
             // --- Preprocessing phase ---
+            Log.d(TAG, "Segment ${recordedSegment.segmentNumber} uploaded arkFileId=${remoteFile.fileId}")
             segment = segment.copy(
                 status = VideoRunStatus.Preprocessing,
                 arkFileId = remoteFile.fileId,
@@ -236,6 +253,7 @@ internal class VideoSegmentProcessor(
                     activeStreamingSegmentIndex = recordedSegment.segmentNumber
                 )
             )
+            Log.d(TAG, "Segment ${recordedSegment.segmentNumber} analysis starting merged=$isMergedSegmentVideo audioId=$remoteAudioFileId")
             val analysisResult = try {
                 segmentAnalyzer.analyze(
                     fileId = remoteFile.fileId,
@@ -253,6 +271,7 @@ internal class VideoSegmentProcessor(
                 )
             }
 
+            Log.d(TAG, "Segment ${recordedSegment.segmentNumber} analysis complete summary=${analysisResult.summary.take(60)} evidenceLen=${analysisResult.evidenceJson.length}")
             // --- Persist result ---
             try {
                 segment = segment.copy(

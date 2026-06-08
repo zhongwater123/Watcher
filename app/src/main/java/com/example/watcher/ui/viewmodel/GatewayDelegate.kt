@@ -5,9 +5,14 @@ import android.graphics.Bitmap
 import com.example.watcher.agentframework.service.AgentFrameworkService
 import com.example.watcher.data.gateway.GatewayEvent
 import com.example.watcher.data.gateway.GatewayAutomationManager
+import com.example.watcher.data.gateway.GatewayPairingRecord
+import com.example.watcher.data.gateway.GatewayPairingRequest
+import com.example.watcher.data.gateway.GatewayRelayConversation
+import com.example.watcher.data.gateway.GatewayRelayMessage
 import com.example.watcher.data.gateway.GatewayRuntimeStatus
 import com.example.watcher.data.gateway.GatewayServer
 import com.example.watcher.data.gateway.GatewayServiceAnnouncer
+import com.example.watcher.data.gateway.GatewayStateHolder
 import com.example.watcher.data.gateway.GatewayTaskManager
 import com.example.watcher.data.gateway.GatewayTaskStatus
 import com.example.watcher.data.model.BaselineSource
@@ -52,7 +57,7 @@ internal class GatewayDelegate(
     private val streamUrlProvider: () -> String?,
     private val onStreamRelease: () -> Unit,
     private val onStreamReclaim: () -> Unit
-) {
+) : GatewayStateHolder.Delegate {
     private val taskManager = GatewayTaskManager()
     private val announcer = GatewayServiceAnnouncer(appContext)
     private val automationManager = GatewayAutomationManager(appContext)
@@ -74,10 +79,14 @@ internal class GatewayDelegate(
             localIp = getLocalIpAddress()
         )
     )
-    val running: StateFlow<Boolean> = _running.asStateFlow()
-    val status: StateFlow<GatewayRuntimeStatus> = _status.asStateFlow()
-    val apiKey: String get() = readOrCreateApiKey()
-    val port: Int get() = prefs.getInt("port", GatewayServer.DEFAULT_PORT)
+    override val running: StateFlow<Boolean> = _running.asStateFlow()
+    override val status: StateFlow<GatewayRuntimeStatus> = _status.asStateFlow()
+    override val pairingRequests: StateFlow<List<GatewayPairingRequest>> = automationManager.pairingRequests
+    override val pairingBindings: StateFlow<List<GatewayPairingRecord>> = automationManager.bindings
+    override val relayConversations: StateFlow<List<GatewayRelayConversation>> = automationManager.relayConversations
+    override val relayMessages: StateFlow<List<GatewayRelayMessage>> = automationManager.relayMessages
+    override val apiKey: String get() = readOrCreateApiKey()
+    override val port: Int get() = prefs.getInt("port", GatewayServer.DEFAULT_PORT)
 
     init {
         automationManager.onRulesChanged = ::reconcileAutomationMonitoring
@@ -89,11 +98,35 @@ internal class GatewayDelegate(
         reconcileAutomationMonitoring()
     }
 
-    fun toggle(enabled: Boolean) {
+    override fun toggle(enabled: Boolean) {
         if (enabled) start() else stop()
     }
 
-    fun getLocalIpAddress(): String {
+    override fun approvePairingRequest(requestId: String) {
+        automationManager.approvePairingRequest(requestId)
+    }
+
+    override fun rejectPairingRequest(requestId: String) {
+        automationManager.rejectPairingRequest(requestId)
+    }
+
+    override fun createLocalRelayConversation(agentBridgeId: String, title: String) {
+        automationManager.createLocalRelayConversation(agentBridgeId, title)
+    }
+
+    override fun sendPhoneRelayMessage(conversationId: String, content: String) {
+        val conversation = automationManager.listRelayConversations()
+            .firstOrNull { it.id == conversationId }
+            ?: return
+        automationManager.appendRelayMessage(
+            agentBridgeId = conversation.agentBridgeId,
+            conversationId = conversationId,
+            author = GatewayAutomationManager.RELAY_AUTHOR_PHONE_USER,
+            content = content
+        )
+    }
+
+    override fun getLocalIpAddress(): String {
         try {
             val interfaces = java.net.NetworkInterface.getNetworkInterfaces()
             while (interfaces.hasMoreElements()) {

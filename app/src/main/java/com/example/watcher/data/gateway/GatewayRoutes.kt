@@ -36,7 +36,7 @@ internal object GatewayRoutes {
             "header" to "X-API-Key",
             "queryFallback" to "api_key",
             "bindingTokenHeader" to "Authorization: Bearer <token> or X-Binding-Token",
-            "note" to "All /api/ endpoints except /api/health and /api/device/identity require an API key. Automation endpoints may also accept a paired binding token."
+            "note" to "All /api/ endpoints except /api/health, /api/device/identity, and /api/device/pair-requests require either an API key or an approved binding token. POST /api/device/pair requires the API key and cannot mint new tokens from an existing binding token. Agent relay endpoints require an approved binding token so conversations can be scoped to one PC Agent."
         ),
         "baseUrl" to baseUrl,
         "responseEnvelope" to mapOf(
@@ -52,6 +52,13 @@ internal object GatewayRoutes {
             "health" to endpoint("GET", "$baseUrl/api/health", false, "Health check with service availability summary."),
             "device_identity" to endpoint("GET", "$baseUrl/api/device/identity", false, "Returns a stable device identity for zero-config discovery."),
             "device_pair" to endpoint("POST", "$baseUrl/api/device/pair", true, "Pairs a desktop watcher bridge and returns a binding token.", body = """{"bridgeId":"watcher-desktop","bridgeName":"Desktop"}"""),
+            "device_pair_request_create" to endpoint("POST", "$baseUrl/api/device/pair-requests", false, "Create a first-use pairing request that must be approved on the phone.", body = """{"bridgeId":"watcher-mcp","bridgeName":"Watcher MCP"}"""),
+            "device_pair_request_get" to endpoint("GET", "$baseUrl/api/device/pair-requests/{requestId}", false, "Poll a pairing request until it is approved, rejected, or expired."),
+            "relay_conversations_register" to endpoint("POST", "$baseUrl/api/agent-relay/conversations", true, "Register or update a PC Agent relay conversation visible on the phone.", body = """{"conversationId":"optional","title":"Current PC work","summary":"Short handoff context"}"""),
+            "relay_conversations_list" to endpoint("GET", "$baseUrl/api/agent-relay/conversations", true, "List relay conversations owned by the bound PC Agent."),
+            "relay_messages_list" to endpoint("GET", "$baseUrl/api/agent-relay/conversations/{conversationId}/messages?afterMessageId=0", true, "Read relay chat messages for one conversation."),
+            "relay_messages_create" to endpoint("POST", "$baseUrl/api/agent-relay/conversations/{conversationId}/messages", true, "Send a PC Agent reply into a relay conversation.", body = """{"content":"Reply from the PC Agent"}"""),
+            "relay_messages_seen" to endpoint("POST", "$baseUrl/api/agent-relay/conversations/{conversationId}/seen", true, "Mark phone-authored relay messages as seen by the PC Agent.", body = """{"throughMessageId":123}"""),
             "capabilities" to endpoint("GET", "$baseUrl/api/capabilities", true, "Returns the gateway protocol contract."),
             "stream_snapshot" to endpoint("GET", "$baseUrl/api/stream/snapshot", true, "Returns the current frame as image/jpeg.", returns = "image/jpeg"),
             "tasks_create" to endpoint("POST", "$baseUrl/api/tasks", true, "Create and execute a task.", body = """{"tool":"<name>", ...params}"""),

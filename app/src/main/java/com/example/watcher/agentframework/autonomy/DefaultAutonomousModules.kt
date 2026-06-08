@@ -277,7 +277,8 @@ class ToolCentricExecutionCoordinator(
 
         when (val action = guardedDecision.decision.action) {
             AgentAction.Continue,
-            is AgentAction.Wait -> Unit
+            is AgentAction.Wait,
+            is AgentAction.RequestApproval -> Unit
 
             is AgentAction.Finish -> {
                 return ExecutionOutcome(

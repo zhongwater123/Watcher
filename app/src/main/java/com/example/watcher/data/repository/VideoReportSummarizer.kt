@@ -1,5 +1,6 @@
 package com.example.watcher.data.repository
 
+import android.util.Log
 import com.example.watcher.data.model.RecordingScenario
 import com.example.watcher.data.model.VideoAnalysisResult
 import com.example.watcher.data.model.VideoProcessTaskDraft
@@ -17,6 +18,8 @@ import java.io.IOException
  * Fuses the audio outline (backbone) with segment narratives (detail)
  * to produce a structured JSON report.
  */
+private const val TAG = "Watcher.Video.Summarizer"
+
 internal class VideoReportSummarizer(
     private val apiService: DoubaoApiService,
     private val planningModel: String,
@@ -29,6 +32,7 @@ internal class VideoReportSummarizer(
         outlineMarkdown: String = "",
         mergedChunkEvidence: List<VideoMergedChunkResult> = emptyList()
     ): VideoAnalysisResult {
+        Log.d(TAG, "Summarize starting: segments=${results.size} hasOutline=${outlineMarkdown.isNotBlank()} chunks=${mergedChunkEvidence.size}")
         val payload = buildPayload(
             task = task,
             results = results,
@@ -53,7 +57,9 @@ internal class VideoReportSummarizer(
             ).requireOutputText("video summary")
         }
 
-        return ModelOutputParser.parseVideoAnalysis(rawText)
+        val result = ModelOutputParser.parseVideoAnalysis(rawText)
+        Log.d(TAG, "Summarize complete: hasMarkdown=${result.markdownNote.isNotBlank()} structuredJson=${result.structuredNoteJson.isNotBlank()} timeline=${result.timelineEvents.size}")
+        return result
     }
 
     fun combineSegmentResults(

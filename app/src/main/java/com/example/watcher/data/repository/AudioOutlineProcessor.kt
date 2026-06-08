@@ -1,5 +1,6 @@
 package com.example.watcher.data.repository
 
+import android.util.Log
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
@@ -18,6 +19,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
+
+private const val TAG = "Watcher.Video.AudioOutline"
 
 internal class AudioOutlineProcessor(
     private val apiService: DoubaoApiService,
@@ -97,6 +100,7 @@ internal class AudioOutlineProcessor(
         task: VideoProcessTaskDraft,
         durationSeconds: Int
     ): VideoAnalysisResult {
+        Log.d(TAG, "Generating outline: audioFile=${audioFile.name} size=${audioFile.length()} duration=${durationSeconds}s")
         // Extract raw ADTS AAC from the MediaMuxer-produced .m4a for upload.
         // MediaMuxer's MP4 container is detected as video/mp4 by Ark, causing input_audio rejection.
         // Raw ADTS .aac bypasses the container issue entirely.
@@ -143,6 +147,7 @@ internal class AudioOutlineProcessor(
             ).requireOutputText("audio outline generation")
         }
 
+        Log.d(TAG, "Outline generated: length=${rawText.length} firstLine=${rawText.lines().firstOrNull()?.take(60)}")
         return VideoAnalysisResult(
             summary = rawText.lines().firstOrNull { it.isNotBlank() }?.removePrefix("# ") ?: "",
             conclusion = "",

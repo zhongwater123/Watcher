@@ -16,7 +16,9 @@ import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Analytics
 import androidx.compose.material.icons.filled.Accessibility
+import androidx.compose.material.icons.filled.DeviceHub
 import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilledTonalButton
@@ -66,8 +68,13 @@ internal fun HubOverviewPage(
     onRotaryRotationChange: (Float) -> Unit,
     onNavigateMonitor: () -> Unit,
     onNavigateAnalysis: () -> Unit,
+    onNavigateMultiDevice: () -> Unit,
+    isGatewayRunning: Boolean,
+    pairedAgentCount: Int,
+    pendingPairingCount: Int,
     onNavigateDigitalLifeCard: () -> Unit,
     onNavigateLiteRt: () -> Unit,
+    onNavigateLocalAgent: () -> Unit,
     onNavigatePoseEstimation: () -> Unit,
     currentPage: HubPage,
     pageOffset: Float
@@ -135,6 +142,15 @@ internal fun HubOverviewPage(
         }
 
         MotionStageSection(pageOffset = pageOffset, depth = MotionDepth.Footer) {
+            MultiDeviceEntryCard(
+                isGatewayRunning = isGatewayRunning,
+                pairedAgentCount = pairedAgentCount,
+                pendingPairingCount = pendingPairingCount,
+                onClick = onNavigateMultiDevice
+            )
+        }
+
+        MotionStageSection(pageOffset = pageOffset, depth = MotionDepth.Footer) {
             DigitalLifeCardEntryCard(
                 onClick = onNavigateDigitalLifeCard
             )
@@ -142,6 +158,10 @@ internal fun HubOverviewPage(
 
         MotionStageSection(pageOffset = pageOffset, depth = MotionDepth.Footer) {
             LiteRtEntryCard(onClick = onNavigateLiteRt)
+        }
+
+        MotionStageSection(pageOffset = pageOffset, depth = MotionDepth.Footer) {
+            LocalAgentEntryCard(onClick = onNavigateLocalAgent)
         }
 
         MotionStageSection(pageOffset = pageOffset, depth = MotionDepth.Footer) {
@@ -401,6 +421,89 @@ private fun LiteRtEntryCard(
 }
 
 @Composable
+private fun MultiDeviceEntryCard(
+    isGatewayRunning: Boolean,
+    pairedAgentCount: Int,
+    pendingPairingCount: Int,
+    onClick: () -> Unit
+) {
+    val extendedColors = LocalWatcherExtendedColors.current
+
+    WatcherCard(onClick = onClick) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.Top
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "独立工作区 / 开放能力",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    text = "多端聚合",
+                    style = MaterialTheme.typography.headlineSmall
+                )
+                Text(
+                    text = "对外开放 Gateway API，支持 mDNS 自动发现与多设备远程能力调用。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Surface(
+                shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp),
+                color = extendedColors.surfaceContainer
+            ) {
+                Icon(
+                    imageVector = Icons.Default.DeviceHub,
+                    contentDescription = null,
+                    modifier = Modifier.padding(14.dp),
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
+
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            StatusPill(
+                text = if (isGatewayRunning) "网关运行中" else "网关已关闭",
+                accent = if (isGatewayRunning) Color(0xFF0E8B65) else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            StatusPill(text = "已连接 $pairedAgentCount", accent = MaterialTheme.colorScheme.primary)
+            if (pendingPairingCount > 0) {
+                StatusPill(text = "待确认 $pendingPairingCount", accent = MaterialTheme.colorScheme.tertiary)
+            } else {
+                StatusPill(text = "首次确认绑定", accent = MaterialTheme.colorScheme.secondary)
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "进入工作区",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Icon(
+                imageVector = Icons.Default.ArrowForward,
+                contentDescription = "进入多端聚合工作区",
+                tint = MaterialTheme.colorScheme.primary
+            )
+        }
+    }
+}
+
+@Composable
 private fun PoseEstimationEntryCard(
     onClick: () -> Unit
 ) {
@@ -467,6 +570,79 @@ private fun PoseEstimationEntryCard(
             Icon(
                 imageVector = Icons.Default.ArrowForward,
                 contentDescription = "进入姿态识别验证",
+                tint = MaterialTheme.colorScheme.primary
+            )
+        }
+    }
+}
+
+@Composable
+private fun LocalAgentEntryCard(
+    onClick: () -> Unit
+) {
+    val extendedColors = LocalWatcherExtendedColors.current
+
+    WatcherCard(onClick = onClick) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.Top
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "独立工作区 / 端侧智能体",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    text = "本地 Agent",
+                    style = MaterialTheme.typography.headlineSmall
+                )
+                Text(
+                    text = "基于 Google ADK-Kotlin 的端侧 AI Agent 框架，支持 Gemini Nano 本地推理与工具调用。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Surface(
+                shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp),
+                color = extendedColors.surfaceContainer
+            ) {
+                Icon(
+                    imageVector = Icons.Default.SmartToy,
+                    contentDescription = null,
+                    modifier = Modifier.padding(14.dp),
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
+
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            StatusPill(text = "ADK 验证", accent = MaterialTheme.colorScheme.primary)
+            StatusPill(text = "端侧推理", accent = MaterialTheme.colorScheme.secondary)
+            StatusPill(text = "工具注册", accent = Color(0xFF0E8B65))
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "进入验证",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Icon(
+                imageVector = Icons.Default.ArrowForward,
+                contentDescription = "进入本地Agent验证",
                 tint = MaterialTheme.colorScheme.primary
             )
         }

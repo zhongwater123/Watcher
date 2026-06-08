@@ -1,0 +1,31 @@
+cd D:\watcher\mcp
+
+npm whoami
+npm run check
+npm test
+npm pack --dry-run
+
+npm publish
+
+
+这是 npm 登录态问题，不是包代码问题。先不要 publish，先重新登录：
+
+cd D:\watcher\mcp
+
+npm config get registry
+npm logout --registry=https://registry.npmjs.org/
+npm login --registry=https://registry.npmjs.org/
+npm whoami
+如果 npm login 打不开浏览器或一直失败，用 legacy 登录：
+
+npm login --registry=https://registry.npmjs.org/ --auth-type=legacy
+npm whoami
+npm whoami 成功返回你的 npm 用户名后，再执行：
+
+npm run check
+npm test
+npm pack --dry-run
+npm publish
+如果你的 npm 账号开启了 2FA，发布时可能要带一次性验证码：
+
+npm publish --otp 123456

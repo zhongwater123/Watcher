@@ -61,6 +61,62 @@ class GatewayContractTest {
             .mapNotNull { it as? Map<*, *> }
             .first { it["triggerType"] == GatewayAutomationManager.TRIGGER_DESK_ABSENCE }
         assertEquals(listOf("desktop_bridge"), deskAbsence["deliveryTypes"])
+
+        val endpoints = capabilities["endpoints"] as Map<*, *>
+        assertNotNull(endpoints["device_pair_request_create"])
+        assertNotNull(endpoints["device_pair_request_get"])
+        assertNotNull(endpoints["relay_conversations_register"])
+        assertNotNull(endpoints["relay_conversations_list"])
+        assertNotNull(endpoints["relay_messages_list"])
+        assertNotNull(endpoints["relay_messages_create"])
+        assertNotNull(endpoints["relay_messages_seen"])
+    }
+
+    @Test
+    fun pairingRegistryTracksPendingExpiryApproveAndReject() {
+        val registry = GatewayPairingRegistry()
+
+        val request = registry.createRequest(
+            bridgeId = "watcher-mcp",
+            bridgeName = "Watcher MCP",
+            sourceHost = "10.0.0.9",
+            now = 1_000L
+        )
+
+        assertEquals(GatewayPairingRequestStatus.Pending, request.status)
+        assertEquals("10.0.0.9", request.sourceHost)
+        assertTrue(registry.pendingRequests(now = 1_500L).any { it.id == request.id })
+
+        val expired = registry.getRequest(request.id, now = request.expiresAt + 1L)
+        assertEquals(GatewayPairingRequestStatus.Expired, expired?.status)
+        assertTrue(registry.pendingRequests(now = request.expiresAt + 1L).isEmpty())
+
+        val approvedRequest = registry.createRequest(
+            bridgeId = "claude-code",
+            bridgeName = "Claude Code",
+            sourceHost = "10.0.0.10",
+            now = 3_000L
+        )
+        val approved = registry.approveRequest(approvedRequest.id, now = 4_000L)
+
+        assertNotNull(approved)
+        assertEquals(GatewayPairingRequestStatus.Approved, approved?.status)
+        assertNotNull(approved?.bindingToken)
+        assertTrue(registry.bindings().any { it.bridgeId == "claude-code" })
+        assertTrue(registry.isValidBindingToken(approved?.bindingToken))
+
+        val rejectedRequest = registry.createRequest(
+            bridgeId = "codex",
+            bridgeName = "Codex",
+            sourceHost = "10.0.0.11",
+            now = 5_000L
+        )
+        val rejected = registry.rejectRequest(rejectedRequest.id, now = 6_000L)
+
+        assertNotNull(rejected)
+        assertEquals(GatewayPairingRequestStatus.Rejected, rejected?.status)
+        assertNull(rejected?.bindingToken)
+        assertFalse(registry.bindings().any { it.bridgeId == "codex" })
     }
 
     @Test

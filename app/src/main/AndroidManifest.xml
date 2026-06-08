@@ -41,6 +41,10 @@
         <uses-native-library android:name="libvndksupport.so" android:required="false" />
 
         <activity
+            android:name=".MultiDeviceActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Watcher" />
+        <activity
             android:name=".LiteRtActivity"
             android:exported="false"
             android:theme="@style/Theme.Watcher" />
@@ -48,6 +52,10 @@
             android:name=".PoseEstimationActivity"
             android:exported="false"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize"
+            android:theme="@style/Theme.Watcher" />
+        <activity
+            android:name=".LocalAgentActivity"
+            android:exported="false"
             android:theme="@style/Theme.Watcher" />
         <activity
             android:name=".AgentConfigActivity"

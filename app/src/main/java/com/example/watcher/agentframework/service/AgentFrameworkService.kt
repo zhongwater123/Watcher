@@ -57,7 +57,9 @@ class AgentFrameworkService(
     private val modulesFactory: AutonomousModulesFactory = DefaultAutonomousModulesFactory(),
     private val recoveryPolicy: AgentRuntimeRecoveryPolicy = CancelRunningExecutionsRecoveryPolicy(),
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
-    private val maxRuntimeEvents: Int = 256
+    private val maxRuntimeEvents: Int = 256,
+    val humanGate: com.example.watcher.agentframework.gate.HumanGate =
+        com.example.watcher.agentframework.gate.SuspendingApprovalGate()
 ) {
     private val mutex = Mutex()
     @Volatile
@@ -290,7 +292,9 @@ class AgentFrameworkService(
                 communicationHub = communicationHub
             ),
             parentScope = scope,
-            sessionId = runtimeId
+            sessionId = runtimeId,
+            useGraphRuntime = profile.config.useGraphRuntime,
+            humanGate = humanGate
         )
         val handle = AutonomousRuntimeHandle(
             runtime = runtime,
@@ -434,6 +438,26 @@ class AgentFrameworkService(
         handle?.runtime?.stop()
         handle?.collectorJob?.cancel()
         runtimeRecordStore.remove(runtimeId)
+    }
+
+    // --- Human Gate / Approval API ---
+
+    suspend fun listPendingApprovals(
+        runtimeId: String? = null
+    ): List<com.example.watcher.agentframework.gate.ApprovalRequest> {
+        return humanGate.pendingApprovals(runtimeId)
+    }
+
+    suspend fun getApproval(
+        gateId: String
+    ): com.example.watcher.agentframework.gate.ApprovalRequest? {
+        return humanGate.getApproval(gateId)
+    }
+
+    suspend fun submitApprovalDecision(
+        decision: com.example.watcher.agentframework.gate.ApprovalDecision
+    ): Boolean {
+        return humanGate.submitDecision(decision)
     }
 
     suspend fun invoke(request: AgentInvocationRequest): AgentInvocationRecord {

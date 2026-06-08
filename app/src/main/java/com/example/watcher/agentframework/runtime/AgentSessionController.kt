@@ -229,6 +229,12 @@ class AgentSessionController internal constructor(
                         }
                     }
 
+                    is AgentAction.RequestApproval -> {
+                        // Legacy session controller does not support approval gates; treat as wait.
+                        recordTurn(step, decision)
+                        resetFailuresAndIdle(step)
+                    }
+
                     is AgentAction.Finish -> {
                         recordTurn(step, decision)
                         mutateSnapshot { state ->

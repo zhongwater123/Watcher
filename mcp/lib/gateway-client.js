@@ -61,9 +61,9 @@ export async function fetchIdentity(baseUrl) {
   return request(baseUrl, "/api/device/identity");
 }
 
-export async function fetchCapabilities({ baseUrl, apiKey }) {
+export async function fetchCapabilities({ baseUrl, apiKey, bindingToken }) {
   return request(baseUrl, "/api/capabilities", {
-    headers: buildHeaders({ apiKey })
+    headers: buildHeaders({ apiKey, bindingToken })
   });
 }
 
@@ -78,9 +78,23 @@ export async function pairDevice({ baseUrl, apiKey, bridgeId, bridgeName }) {
   });
 }
 
-export async function fetchSnapshot({ baseUrl, apiKey }) {
+export async function createPairingRequest({ baseUrl, bridgeId, bridgeName }) {
+  return request(baseUrl, "/api/device/pair-requests", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ bridgeId, bridgeName })
+  });
+}
+
+export async function fetchPairingRequest({ baseUrl, requestId }) {
+  return request(baseUrl, `/api/device/pair-requests/${encodeURIComponent(requestId)}`);
+}
+
+export async function fetchSnapshot({ baseUrl, apiKey, bindingToken }) {
   const payload = await request(baseUrl, "/api/stream/snapshot", {
-    headers: buildHeaders({ apiKey, accept: "image/jpeg" })
+    headers: buildHeaders({ apiKey, bindingToken, accept: "image/jpeg" })
   });
   return {
     mimeType: payload.mimeType,
@@ -89,30 +103,30 @@ export async function fetchSnapshot({ baseUrl, apiKey }) {
   };
 }
 
-export async function createTask({ baseUrl, apiKey, payload }) {
+export async function createTask({ baseUrl, apiKey, bindingToken, payload }) {
   return request(baseUrl, "/api/tasks", {
     method: "POST",
     headers: {
-      ...buildHeaders({ apiKey }),
+      ...buildHeaders({ apiKey, bindingToken }),
       "Content-Type": "application/json"
     },
     body: JSON.stringify(payload)
   });
 }
 
-export async function fetchTasks({ baseUrl, apiKey }) {
+export async function fetchTasks({ baseUrl, apiKey, bindingToken }) {
   return request(baseUrl, "/api/tasks", {
-    headers: buildHeaders({ apiKey })
+    headers: buildHeaders({ apiKey, bindingToken })
   });
 }
 
-export async function fetchTask({ baseUrl, apiKey, taskId }) {
+export async function fetchTask({ baseUrl, apiKey, bindingToken, taskId }) {
   return request(baseUrl, `/api/tasks/${encodeURIComponent(taskId)}`, {
-    headers: buildHeaders({ apiKey })
+    headers: buildHeaders({ apiKey, bindingToken })
   });
 }
 
-export async function fetchTaskEvents({ baseUrl, apiKey, taskId, afterEventId, since }) {
+export async function fetchTaskEvents({ baseUrl, apiKey, bindingToken, taskId, afterEventId, since }) {
   return request(
     baseUrl,
     withQuery(`/api/tasks/${encodeURIComponent(taskId)}/events`, {
@@ -120,26 +134,77 @@ export async function fetchTaskEvents({ baseUrl, apiKey, taskId, afterEventId, s
       since
     }),
     {
-      headers: buildHeaders({ apiKey })
+      headers: buildHeaders({ apiKey, bindingToken })
     }
   );
 }
 
-export async function cancelTask({ baseUrl, apiKey, taskId }) {
+export async function cancelTask({ baseUrl, apiKey, bindingToken, taskId }) {
   return request(baseUrl, `/api/tasks/${encodeURIComponent(taskId)}`, {
     method: "DELETE",
-    headers: buildHeaders({ apiKey })
+    headers: buildHeaders({ apiKey, bindingToken })
   });
 }
 
-export async function fetchCommentaryState({ baseUrl, apiKey }) {
+export async function fetchCommentaryState({ baseUrl, apiKey, bindingToken }) {
   return request(baseUrl, "/api/commentary/state", {
-    headers: buildHeaders({ apiKey })
+    headers: buildHeaders({ apiKey, bindingToken })
   });
 }
 
-export async function fetchCommentaryEntries({ baseUrl, apiKey, since }) {
+export async function fetchCommentaryEntries({ baseUrl, apiKey, bindingToken, since }) {
   return request(baseUrl, withQuery("/api/commentary/entries", { since }), {
-    headers: buildHeaders({ apiKey })
+    headers: buildHeaders({ apiKey, bindingToken })
+  });
+}
+
+export async function registerRelayConversation({ baseUrl, apiKey, bindingToken, payload }) {
+  return request(baseUrl, "/api/agent-relay/conversations", {
+    method: "POST",
+    headers: {
+      ...buildHeaders({ apiKey, bindingToken }),
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function fetchRelayConversations({ baseUrl, apiKey, bindingToken }) {
+  return request(baseUrl, "/api/agent-relay/conversations", {
+    headers: buildHeaders({ apiKey, bindingToken })
+  });
+}
+
+export async function fetchRelayMessages({ baseUrl, apiKey, bindingToken, conversationId, afterMessageId }) {
+  return request(
+    baseUrl,
+    withQuery(`/api/agent-relay/conversations/${encodeURIComponent(conversationId)}/messages`, {
+      afterMessageId
+    }),
+    {
+      headers: buildHeaders({ apiKey, bindingToken })
+    }
+  );
+}
+
+export async function sendRelayMessage({ baseUrl, apiKey, bindingToken, conversationId, content }) {
+  return request(baseUrl, `/api/agent-relay/conversations/${encodeURIComponent(conversationId)}/messages`, {
+    method: "POST",
+    headers: {
+      ...buildHeaders({ apiKey, bindingToken }),
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ content })
+  });
+}
+
+export async function markRelayMessagesSeen({ baseUrl, apiKey, bindingToken, conversationId, throughMessageId }) {
+  return request(baseUrl, `/api/agent-relay/conversations/${encodeURIComponent(conversationId)}/seen`, {
+    method: "POST",
+    headers: {
+      ...buildHeaders({ apiKey, bindingToken }),
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ throughMessageId })
   });
 }

@@ -1,7 +1,8 @@
 import os from "node:os";
-import { Bonjour } from "bonjour-service";
+import bonjourService from "bonjour-service";
 import { loadDevices } from "./state.js";
 
+const { Bonjour } = bonjourService;
 const PROBE_TIMEOUT_MS = 1500;
 
 function isPrivateIpv4(address) {

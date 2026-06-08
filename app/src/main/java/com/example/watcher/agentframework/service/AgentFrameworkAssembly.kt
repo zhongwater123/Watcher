@@ -146,6 +146,13 @@ class AgentFrameworkBuilder {
     private var storage: AgentFrameworkStorage = AgentFrameworkStorage()
     private var components: AgentFrameworkRuntimeComponents = AgentFrameworkRuntimeComponents()
     private val brainFactories = mutableListOf<AgentBrainFactory>()
+    private var humanGate: com.example.watcher.agentframework.gate.HumanGate =
+        com.example.watcher.agentframework.gate.SuspendingApprovalGate()
+
+    fun humanGate(gate: com.example.watcher.agentframework.gate.HumanGate): AgentFrameworkBuilder {
+        this.humanGate = gate
+        return this
+    }
 
     fun persistentStorage(rootDir: File): AgentFrameworkBuilder {
         this.storage = AgentFrameworkStorage.createPersistent(rootDir)
@@ -196,7 +203,8 @@ class AgentFrameworkBuilder {
             communicationHub = components.communicationHub,
             modulesFactory = components.modulesFactory,
             recoveryPolicy = components.recoveryPolicy,
-            scope = components.scope
+            scope = components.scope,
+            humanGate = humanGate
         ).registerBrainFactories(brainFactories)
         runBlocking {
             service.reconcilePersistentExecutionState()

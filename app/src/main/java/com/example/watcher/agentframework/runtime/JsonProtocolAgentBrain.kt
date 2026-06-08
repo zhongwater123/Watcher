@@ -157,6 +157,18 @@ class JsonProtocolAgentBrain(
                 success = map["success"] as? Boolean ?: true
             )
 
+            "request_approval" -> {
+                @Suppress("UNCHECKED_CAST")
+                val args = map["toolArguments"] as? Map<String, Any?> ?: emptyMap()
+                AgentAction.RequestApproval(
+                    reason = map["reason"] as? String ?: "approval needed",
+                    pendingAction = map["pendingAction"] as? String ?: "",
+                    riskLevel = map["riskLevel"] as? String ?: "medium",
+                    toolName = map["toolName"] as? String,
+                    toolArguments = args
+                )
+            }
+
             else -> AgentAction.Continue
         }
     }

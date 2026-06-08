@@ -6,11 +6,18 @@ import com.example.watcher.data.model.CheckResult
 import com.example.watcher.data.model.MonitorStatus
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.util.UUID
 
 private const val AUTOMATION_PREFS = "gateway_automation_prefs"
 private const val KEY_DEVICE_ID = "device_id"
 private const val KEY_BINDINGS = "bindings"
+private const val KEY_PAIRING_REQUESTS = "pairing_requests"
+private const val KEY_RELAY_CONVERSATIONS = "relay_conversations"
+private const val KEY_RELAY_MESSAGES = "relay_messages"
+private const val KEY_NEXT_RELAY_MESSAGE_ID = "next_relay_message_id"
 private const val KEY_AUTOMATIONS = "automations"
 private const val KEY_AUTOMATION_EVENTS = "automation_events"
 private const val KEY_NEXT_AUTOMATION_EVENT_ID = "next_automation_event_id"
@@ -22,6 +29,19 @@ internal class GatewayAutomationManager(
     private val gson = Gson()
 
     var onRulesChanged: (() -> Unit)? = null
+    var onPairingStateChanged: (() -> Unit)? = null
+
+    private val _pairingRequests = MutableStateFlow<List<GatewayPairingRequest>>(emptyList())
+    val pairingRequests: StateFlow<List<GatewayPairingRequest>> = _pairingRequests.asStateFlow()
+
+    private val _bindings = MutableStateFlow<List<GatewayPairingRecord>>(emptyList())
+    val bindings: StateFlow<List<GatewayPairingRecord>> = _bindings.asStateFlow()
+
+    private val _relayConversations = MutableStateFlow<List<GatewayRelayConversation>>(emptyList())
+    val relayConversations: StateFlow<List<GatewayRelayConversation>> = _relayConversations.asStateFlow()
+
+    private val _relayMessages = MutableStateFlow<List<GatewayRelayMessage>>(emptyList())
+    val relayMessages: StateFlow<List<GatewayRelayMessage>> = _relayMessages.asStateFlow()
 
     private val deviceId: String by lazy {
         val existing = prefs.getString(KEY_DEVICE_ID, null).orEmpty()
@@ -34,37 +54,29 @@ internal class GatewayAutomationManager(
         }
     }
 
+    init {
+        refreshPairingState()
+        refreshRelayState()
+    }
+
     @Synchronized
     fun deviceIdentity(): GatewayDeviceIdentity {
         return GatewayDeviceIdentity(
             deviceId = deviceId,
             deviceName = buildDeviceName(),
-            serviceVersion = "1.2",
-            protocolVersion = "2026-05-automation-v1",
-            capabilities = listOf("gateway", "automation", "agent", "stream", "commentary")
+            serviceVersion = "1.3",
+            protocolVersion = "2026-06-relay-v1",
+            capabilities = listOf("gateway", "automation", "agent", "stream", "commentary", "agent_relay")
         )
     }
 
     @Synchronized
     fun pair(bridgeId: String, bridgeName: String): GatewayPairingResult {
-        val normalizedId = bridgeId.trim().ifBlank { "watcher-bridge" }
-        val normalizedName = bridgeName.trim().ifBlank { normalizedId }
-        val existing = loadBindings().firstOrNull { it.bridgeId == normalizedId }
-        val record = if (existing != null) {
-            existing.copy(bridgeName = normalizedName, lastSeenAt = System.currentTimeMillis())
-        } else {
-            GatewayPairingRecord(
-                bridgeId = normalizedId,
-                bridgeName = normalizedName,
-                bindingToken = UUID.randomUUID().toString().replace("-", "")
-            )
-        }
-        saveBindings(
-            loadBindings()
-                .filterNot { it.bridgeId == normalizedId }
-                .plus(record)
-                .sortedBy { it.bridgeId }
-        )
+        val now = System.currentTimeMillis()
+        val registry = loadPairingRegistry()
+        val record = registry.pair(bridgeId, bridgeName, now)
+        saveBindings(registry.bindings())
+        refreshPairingState(registry)
         return GatewayPairingResult(
             bridgeId = record.bridgeId,
             bridgeName = record.bridgeName,
@@ -75,10 +87,227 @@ internal class GatewayAutomationManager(
     }
 
     @Synchronized
+    fun createPairingRequest(
+        bridgeId: String,
+        bridgeName: String,
+        sourceHost: String?
+    ): GatewayPairingRequest {
+        val registry = loadPairingRegistry()
+        val request = registry.createRequest(bridgeId, bridgeName, sourceHost)
+        savePairingRequests(registry.requests())
+        refreshPairingState(registry)
+        onPairingStateChanged?.invoke()
+        return request
+    }
+
+    @Synchronized
+    fun getPairingRequest(requestId: String): GatewayPairingRequest? {
+        val registry = loadPairingRegistry()
+        val request = registry.getRequest(requestId)
+        savePairingRequests(registry.requests())
+        refreshPairingState(registry)
+        return request
+    }
+
+    @Synchronized
+    fun pendingPairingRequests(): List<GatewayPairingRequest> {
+        val registry = loadPairingRegistry()
+        val requests = registry.pendingRequests()
+        savePairingRequests(registry.requests())
+        refreshPairingState(registry)
+        return requests
+    }
+
+    @Synchronized
+    fun listPairingBindings(): List<GatewayPairingRecord> {
+        val registry = loadPairingRegistry()
+        refreshPairingState(registry)
+        return registry.bindings()
+    }
+
+    @Synchronized
+    fun approvePairingRequest(requestId: String): GatewayPairingRequest? {
+        val registry = loadPairingRegistry()
+        val request = registry.approveRequest(requestId, deviceId = deviceId)
+        savePairingRequests(registry.requests())
+        saveBindings(registry.bindings())
+        refreshPairingState(registry)
+        onPairingStateChanged?.invoke()
+        return request
+    }
+
+    @Synchronized
+    fun rejectPairingRequest(requestId: String): GatewayPairingRequest? {
+        val registry = loadPairingRegistry()
+        val request = registry.rejectRequest(requestId)
+        savePairingRequests(registry.requests())
+        refreshPairingState(registry)
+        onPairingStateChanged?.invoke()
+        return request
+    }
+
+    @Synchronized
     fun isValidBindingToken(token: String?): Boolean {
+        return loadPairingRegistry().isValidBindingToken(token)
+    }
+
+    @Synchronized
+    fun bindingForToken(token: String?): GatewayPairingRecord? {
         val normalized = token?.trim().orEmpty()
-        if (normalized.isBlank()) return false
-        return loadBindings().any { it.bindingToken == normalized }
+        if (normalized.isBlank()) return null
+        return loadBindings().firstOrNull { it.bindingToken == normalized }
+    }
+
+    @Synchronized
+    fun createLocalRelayConversation(agentBridgeId: String, title: String): GatewayRelayConversation? {
+        val binding = loadBindings().firstOrNull { it.bridgeId == agentBridgeId } ?: return null
+        val now = System.currentTimeMillis()
+        val conversation = GatewayRelayConversation(
+            id = "relay_${UUID.randomUUID().toString().replace("-", "").take(12)}",
+            agentBridgeId = binding.bridgeId,
+            agentBridgeName = binding.bridgeName,
+            title = title.trim().ifBlank { "手机接续会话" },
+            summary = "手机端新建的接续会话",
+            createdAt = now,
+            updatedAt = now
+        )
+        val conversations = (loadRelayConversations() + conversation)
+            .sortedByDescending { it.updatedAt }
+            .take(MAX_RELAY_CONVERSATIONS)
+        saveRelayConversations(conversations)
+        refreshRelayState()
+        return conversation
+    }
+
+    @Synchronized
+    fun registerRelayConversation(
+        binding: GatewayPairingRecord,
+        payload: Map<String, Any?>
+    ): GatewayRelayConversation {
+        val now = System.currentTimeMillis()
+        val requestedId = payload["conversationId"]?.toString()?.trim().orEmpty()
+        val existing = loadRelayConversations().firstOrNull {
+            requestedId.isNotBlank() && it.id == requestedId
+        }
+        require(existing == null || existing.agentBridgeId == binding.bridgeId) {
+            "Relay conversation belongs to another Agent."
+        }
+        val title = payload["title"]?.toString()?.trim().orEmpty()
+        val summary = payload["summary"]?.toString()?.trim().orEmpty()
+        val status = payload["status"]?.toString()?.trim()?.ifBlank { null } ?: existing?.status ?: "active"
+        val conversation = if (existing != null) {
+            existing.copy(
+                agentBridgeName = binding.bridgeName,
+                title = title.ifBlank { existing.title },
+                summary = summary.ifBlank { existing.summary },
+                status = status,
+                updatedAt = now
+            )
+        } else {
+            GatewayRelayConversation(
+                id = requestedId.ifBlank { "relay_${UUID.randomUUID().toString().replace("-", "").take(12)}" },
+                agentBridgeId = binding.bridgeId,
+                agentBridgeName = binding.bridgeName,
+                title = title.ifBlank { "PC Agent 会话" },
+                summary = summary,
+                status = status,
+                createdAt = now,
+                updatedAt = now
+            )
+        }
+        val conversations = (loadRelayConversations().filterNot { it.id == conversation.id } + conversation)
+            .sortedByDescending { it.updatedAt }
+            .take(MAX_RELAY_CONVERSATIONS)
+        saveRelayConversations(conversations)
+        refreshRelayState()
+        return conversation
+    }
+
+    @Synchronized
+    fun listRelayConversations(agentBridgeId: String? = null): List<GatewayRelayConversation> {
+        val conversations = loadRelayConversations()
+            .filter { agentBridgeId == null || it.agentBridgeId == agentBridgeId }
+            .sortedByDescending { it.updatedAt }
+        refreshRelayState()
+        return conversations
+    }
+
+    @Synchronized
+    fun listRelayMessages(
+        agentBridgeId: String,
+        conversationId: String,
+        afterMessageId: Long? = null
+    ): List<GatewayRelayMessage>? {
+        getOwnedRelayConversation(agentBridgeId, conversationId) ?: return null
+        val messages = loadRelayMessages()
+            .filter { it.conversationId == conversationId }
+            .filter { afterMessageId == null || it.id > afterMessageId }
+            .sortedBy { it.id }
+        refreshRelayState()
+        return messages
+    }
+
+    @Synchronized
+    fun appendRelayMessage(
+        agentBridgeId: String,
+        conversationId: String,
+        author: String,
+        content: String
+    ): GatewayRelayMessage? {
+        val conversation = getOwnedRelayConversation(agentBridgeId, conversationId) ?: return null
+        val trimmed = content.trim()
+        if (trimmed.isBlank()) return null
+        val now = System.currentTimeMillis()
+        val message = GatewayRelayMessage(
+            id = nextRelayMessageId(),
+            conversationId = conversationId,
+            author = author,
+            content = trimmed,
+            createdAt = now
+        )
+        saveRelayMessages((loadRelayMessages() + message).trimRelayMessages())
+        saveRelayConversations(
+            loadRelayConversations().map {
+                if (it.id == conversation.id) {
+                    it.copy(updatedAt = now, lastMessageAt = now)
+                } else {
+                    it
+                }
+            }.sortedByDescending { it.updatedAt }.take(MAX_RELAY_CONVERSATIONS)
+        )
+        refreshRelayState()
+        return message
+    }
+
+    @Synchronized
+    fun markRelayMessagesSeen(
+        agentBridgeId: String,
+        conversationId: String,
+        throughMessageId: Long? = null
+    ): Map<String, Any?>? {
+        getOwnedRelayConversation(agentBridgeId, conversationId) ?: return null
+        val now = System.currentTimeMillis()
+        var updatedCount = 0
+        val messages = loadRelayMessages().map { message ->
+            if (
+                message.conversationId == conversationId &&
+                message.author == RELAY_AUTHOR_PHONE_USER &&
+                message.seenByAgentAt == null &&
+                (throughMessageId == null || message.id <= throughMessageId)
+            ) {
+                updatedCount += 1
+                message.copy(seenByAgentAt = now)
+            } else {
+                message
+            }
+        }
+        saveRelayMessages(messages)
+        refreshRelayState()
+        return mapOf(
+            "conversationId" to conversationId,
+            "updatedCount" to updatedCount,
+            "seenAt" to now
+        )
     }
 
     @Synchronized
@@ -268,6 +497,85 @@ internal class GatewayAutomationManager(
         prefs.edit().putString(KEY_BINDINGS, gson.toJson(bindings)).apply()
     }
 
+    private fun loadPairingRequests(): List<GatewayPairingRequest> {
+        val raw = prefs.getString(KEY_PAIRING_REQUESTS, null).orEmpty()
+        if (raw.isBlank()) return emptyList()
+        val type = object : TypeToken<List<GatewayPairingRequest>>() {}.type
+        return runCatching { gson.fromJson<List<GatewayPairingRequest>>(raw, type) }.getOrElse { emptyList() }
+    }
+
+    private fun savePairingRequests(requests: List<GatewayPairingRequest>) {
+        prefs.edit().putString(KEY_PAIRING_REQUESTS, gson.toJson(requests.takeLast(MAX_PAIRING_REQUESTS))).apply()
+    }
+
+    private fun loadPairingRegistry(): GatewayPairingRegistry =
+        GatewayPairingRegistry(
+            initialRequests = loadPairingRequests(),
+            initialBindings = loadBindings()
+        )
+
+    private fun refreshPairingState(registry: GatewayPairingRegistry = loadPairingRegistry()) {
+        _pairingRequests.value = registry.requests()
+        _bindings.value = registry.bindings()
+    }
+
+    private fun getOwnedRelayConversation(
+        agentBridgeId: String,
+        conversationId: String
+    ): GatewayRelayConversation? {
+        return loadRelayConversations().firstOrNull {
+            it.id == conversationId && it.agentBridgeId == agentBridgeId
+        }
+    }
+
+    private fun loadRelayConversations(): List<GatewayRelayConversation> {
+        val raw = prefs.getString(KEY_RELAY_CONVERSATIONS, null).orEmpty()
+        if (raw.isBlank()) return emptyList()
+        val type = object : TypeToken<List<GatewayRelayConversation>>() {}.type
+        return runCatching { gson.fromJson<List<GatewayRelayConversation>>(raw, type) }.getOrElse { emptyList() }
+    }
+
+    private fun saveRelayConversations(conversations: List<GatewayRelayConversation>) {
+        val kept = conversations
+            .sortedByDescending { it.updatedAt }
+            .take(MAX_RELAY_CONVERSATIONS)
+        prefs.edit().putString(KEY_RELAY_CONVERSATIONS, gson.toJson(kept)).apply()
+        val keptIds = kept.map { it.id }.toSet()
+        val messages = loadRelayMessages().filter { it.conversationId in keptIds }
+        saveRelayMessages(messages)
+    }
+
+    private fun loadRelayMessages(): List<GatewayRelayMessage> {
+        val raw = prefs.getString(KEY_RELAY_MESSAGES, null).orEmpty()
+        if (raw.isBlank()) return emptyList()
+        val type = object : TypeToken<List<GatewayRelayMessage>>() {}.type
+        return runCatching { gson.fromJson<List<GatewayRelayMessage>>(raw, type) }.getOrElse { emptyList() }
+    }
+
+    private fun saveRelayMessages(messages: List<GatewayRelayMessage>) {
+        prefs.edit().putString(KEY_RELAY_MESSAGES, gson.toJson(messages.trimRelayMessages())).apply()
+    }
+
+    private fun List<GatewayRelayMessage>.trimRelayMessages(): List<GatewayRelayMessage> {
+        return groupBy { it.conversationId }
+            .values
+            .flatMap { group -> group.sortedBy { it.id }.takeLast(MAX_RELAY_MESSAGES_PER_CONVERSATION) }
+            .sortedBy { it.id }
+    }
+
+    private fun nextRelayMessageId(): Long {
+        val next = prefs.getLong(KEY_NEXT_RELAY_MESSAGE_ID, 1L)
+        prefs.edit().putLong(KEY_NEXT_RELAY_MESSAGE_ID, next + 1L).apply()
+        return next
+    }
+
+    private fun refreshRelayState() {
+        _relayConversations.value = loadRelayConversations()
+            .sortedByDescending { it.updatedAt }
+        _relayMessages.value = loadRelayMessages()
+            .sortedBy { it.id }
+    }
+
     private fun loadAutomations(): List<GatewayAutomationRule> {
         val raw = prefs.getString(KEY_AUTOMATIONS, null).orEmpty()
         if (raw.isBlank()) return emptyList()
@@ -300,6 +608,11 @@ internal class GatewayAutomationManager(
 
     companion object {
         private const val MAX_EVENTS = 200
+        private const val MAX_PAIRING_REQUESTS = 50
+        private const val MAX_RELAY_CONVERSATIONS = 100
+        private const val MAX_RELAY_MESSAGES_PER_CONVERSATION = 500
+        const val RELAY_AUTHOR_PHONE_USER = "phone_user"
+        const val RELAY_AUTHOR_PC_AGENT = "pc_agent"
         const val TRIGGER_DESK_ABSENCE = "desk_absence_detected"
     }
 }

@@ -32,7 +32,8 @@ internal class GatewayServer(
     private val streamStatusProvider: (() -> Map<String, Any?>)? = null,
     private val onStreamHandoff: (() -> String?)? = null,
     private val onStreamReclaim: (() -> Unit)? = null,
-    private val onStreamRelease: (() -> Unit)? = null
+    private val onStreamRelease: (() -> Unit)? = null,
+    private val humanGate: com.example.watcher.agentframework.gate.HumanGate? = null
 ) : NanoHTTPD(port) {
 
     private val baseUrl: String get() = "http://${localIpProvider()}:$listeningPort"
@@ -103,6 +104,26 @@ internal class GatewayServer(
 
         method == Method.POST && uri == "/api/device/pair" -> pairDevice(session)
 
+        method == Method.POST && uri == "/api/device/pair-requests" -> createPairingRequest(session)
+
+        method == Method.GET && uri.matches(Regex("/api/device/pair-requests/[^/]+")) ->
+            getPairingRequest(uri)
+
+        method == Method.POST && uri == "/api/agent-relay/conversations" ->
+            registerRelayConversation(session)
+
+        method == Method.GET && uri == "/api/agent-relay/conversations" ->
+            listRelayConversations(session)
+
+        method == Method.GET && uri.matches(Regex("/api/agent-relay/conversations/[^/]+/messages")) ->
+            getRelayMessages(uri, session)
+
+        method == Method.POST && uri.matches(Regex("/api/agent-relay/conversations/[^/]+/messages")) ->
+            postRelayMessage(uri, session)
+
+        method == Method.POST && uri.matches(Regex("/api/agent-relay/conversations/[^/]+/seen")) ->
+            markRelayMessagesSeen(uri, session)
+
         method == Method.GET && uri == "/api/stream/snapshot" -> snapshotResponse()
 
         method == Method.POST && uri == "/api/tasks" -> createTask(session)
@@ -168,6 +189,18 @@ internal class GatewayServer(
             else notFound("Autonomous runtime not found: $runtimeId", details = mapOf("runtimeId" to runtimeId))
         }
 
+        // --- Human Gate / Approval Routes ---
+        method == Method.GET && uri == "/api/agents/gates" -> listPendingApprovals(null)
+
+        method == Method.GET && uri.matches(Regex("/api/agents/runs/[^/]+/gates")) -> {
+            val runtimeId = uri.removePrefix("/api/agents/runs/").removeSuffix("/gates")
+            listPendingApprovals(runtimeId)
+        }
+
+        method == Method.POST && uri.matches(Regex("/api/agents/runs/[^/]+/gates/[^/]+")) -> {
+            submitGateDecision(uri, session)
+        }
+
         method == Method.GET && uri == "/api/stream/status" -> {
             val provider = streamStatusProvider ?: return notImplemented("Stream management not available")
             ok(provider())
@@ -228,6 +261,103 @@ internal class GatewayServer(
         }
         val bridgeName = params["bridgeName"]?.toString().orEmpty()
         return ok(manager.pair(bridgeId, bridgeName), status = Response.Status.CREATED)
+    }
+
+    private fun createPairingRequest(session: IHTTPSession): Response {
+        val manager = automationManager ?: return notImplemented("Automation manager not configured")
+        val params = requireBodyMap(session) ?: return invalidBody()
+        val bridgeId = params["bridgeId"]?.toString()?.trim().orEmpty()
+        if (bridgeId.isBlank()) {
+            return missingField("bridgeId")
+        }
+        val bridgeName = params["bridgeName"]?.toString().orEmpty()
+        return ok(
+            manager.createPairingRequest(
+                bridgeId = bridgeId,
+                bridgeName = bridgeName,
+                sourceHost = session.remoteIpAddress
+            ),
+            status = Response.Status.CREATED
+        )
+    }
+
+    private fun getPairingRequest(uri: String): Response {
+        val manager = automationManager ?: return notImplemented("Automation manager not configured")
+        val requestId = uri.removePrefix("/api/device/pair-requests/")
+        val request = manager.getPairingRequest(requestId)
+        return if (request != null) ok(request) else notFound(
+            "Pairing request not found: $requestId",
+            details = mapOf("requestId" to requestId)
+        )
+    }
+
+    private fun registerRelayConversation(session: IHTTPSession): Response {
+        val manager = automationManager ?: return notImplemented("Automation manager not configured")
+        val binding = relayBinding(session) ?: return relayTokenRequired()
+        val params = requireBodyMap(session) ?: return invalidBody()
+        return ok(
+            manager.registerRelayConversation(binding, params),
+            status = Response.Status.CREATED
+        )
+    }
+
+    private fun listRelayConversations(session: IHTTPSession): Response {
+        val manager = automationManager ?: return notImplemented("Automation manager not configured")
+        val binding = relayBinding(session) ?: return relayTokenRequired()
+        val conversations = manager.listRelayConversations(binding.bridgeId)
+        return ok(conversations, meta = GatewayMeta(count = conversations.size))
+    }
+
+    private fun getRelayMessages(uri: String, session: IHTTPSession): Response {
+        val manager = automationManager ?: return notImplemented("Automation manager not configured")
+        val binding = relayBinding(session) ?: return relayTokenRequired()
+        val conversationId = uri
+            .removePrefix("/api/agent-relay/conversations/")
+            .removeSuffix("/messages")
+        val afterMessageId = session.parms["afterMessageId"]?.toLongOrNull()
+        val messages = manager.listRelayMessages(
+            agentBridgeId = binding.bridgeId,
+            conversationId = conversationId,
+            afterMessageId = afterMessageId
+        ) ?: return notFound("Relay conversation not found: $conversationId", details = mapOf("conversationId" to conversationId))
+        val nextSince = messages.maxOfOrNull { it.id }
+        return ok(messages, meta = GatewayMeta(count = messages.size, nextSince = nextSince))
+    }
+
+    private fun postRelayMessage(uri: String, session: IHTTPSession): Response {
+        val manager = automationManager ?: return notImplemented("Automation manager not configured")
+        val binding = relayBinding(session) ?: return relayTokenRequired()
+        val params = requireBodyMap(session) ?: return invalidBody()
+        val content = params["content"]?.toString()?.trim().orEmpty()
+        if (content.isBlank()) return missingField("content")
+        val conversationId = uri
+            .removePrefix("/api/agent-relay/conversations/")
+            .removeSuffix("/messages")
+        val message = manager.appendRelayMessage(
+            agentBridgeId = binding.bridgeId,
+            conversationId = conversationId,
+            author = GatewayAutomationManager.RELAY_AUTHOR_PC_AGENT,
+            content = content
+        ) ?: return notFound("Relay conversation not found: $conversationId", details = mapOf("conversationId" to conversationId))
+        return ok(message, status = Response.Status.CREATED)
+    }
+
+    private fun markRelayMessagesSeen(uri: String, session: IHTTPSession): Response {
+        val manager = automationManager ?: return notImplemented("Automation manager not configured")
+        val binding = relayBinding(session) ?: return relayTokenRequired()
+        val params = requireBodyMap(session) ?: emptyMap()
+        val conversationId = uri
+            .removePrefix("/api/agent-relay/conversations/")
+            .removeSuffix("/seen")
+        val throughMessageId = (params["throughMessageId"] as? Number)?.toLong()
+            ?: params["throughMessageId"]?.toString()?.toLongOrNull()
+            ?: session.parms["throughMessageId"]?.toLongOrNull()
+        val result = manager.markRelayMessagesSeen(
+            agentBridgeId = binding.bridgeId,
+            conversationId = conversationId,
+            throughMessageId = throughMessageId
+        ) ?: return notFound("Relay conversation not found: $conversationId", details = mapOf("conversationId" to conversationId))
+        return ok(result)
     }
 
     private fun createTask(session: IHTTPSession): Response {
@@ -317,6 +447,49 @@ internal class GatewayServer(
             ?: return notFound("Autonomous runtime not found: $runtimeId", details = mapOf("runtimeId" to runtimeId))
         val runtime = runBlocking { service.submitAutonomousSignal(runtimeId, signal) }
         return ok(runtime)
+    }
+
+    private fun listPendingApprovals(runtimeId: String?): Response {
+        val gate = humanGate ?: return notImplemented("Human gate not configured")
+        val approvals = runBlocking { gate.pendingApprovals(runtimeId) }
+        return ok(approvals)
+    }
+
+    private fun submitGateDecision(uri: String, session: IHTTPSession): Response {
+        val gate = humanGate ?: return notImplemented("Human gate not configured")
+        val params = requireBodyMap(session) ?: return invalidBody()
+        val segments = uri.removePrefix("/api/agents/runs/").split("/gates/")
+        if (segments.size != 2) return invalidBody()
+        val gateId = segments[1]
+        val decisionStr = params["decision"] as? String
+            ?: return missingField("decision", details = mapOf("allowed" to listOf("approved", "rejected")))
+        val status = when (decisionStr.lowercase()) {
+            "approved", "approve" -> com.example.watcher.agentframework.gate.ApprovalStatus.Approved
+            "rejected", "reject" -> com.example.watcher.agentframework.gate.ApprovalStatus.Rejected
+            else -> return error(
+                Response.Status.BAD_REQUEST,
+                "Invalid decision: $decisionStr. Must be 'approved' or 'rejected'.",
+                "invalid_decision"
+            )
+        }
+        val feedback = params["feedback"] as? String ?: ""
+        val decision = com.example.watcher.agentframework.gate.ApprovalDecision(
+            gateId = gateId,
+            decision = status,
+            feedback = feedback,
+            decidedBy = params["decidedBy"] as? String ?: "user"
+        )
+        val applied = runBlocking { gate.submitDecision(decision) }
+        return if (applied) {
+            ok(mapOf(
+                "gateId" to gateId,
+                "runtimeId" to segments[0],
+                "decision" to decisionStr,
+                "resumed" to true
+            ))
+        } else {
+            notFound("Pending approval not found: $gateId", details = mapOf("gateId" to gateId))
+        }
     }
 
     private fun streamHandoff(): Response {
@@ -498,6 +671,12 @@ internal class GatewayServer(
         errorCode = GatewayRoutes.ERROR_CONFLICT
     )
 
+    private fun relayTokenRequired(): Response = error(
+        status = Response.Status.UNAUTHORIZED,
+        message = "Relay chat requires an approved binding token.",
+        errorCode = GatewayRoutes.ERROR_INVALID_TOKEN
+    )
+
     private fun error(
         status: Response.Status,
         message: String,
@@ -529,25 +708,37 @@ internal class GatewayServer(
 
     private fun requiresApiAuthentication(uri: String): Boolean {
         if (!uri.startsWith("/api/")) return false
-        return uri != "/api/health" && uri != "/api/device/identity"
+        if (uri == "/api/health" || uri == "/api/device/identity") return false
+        if (uri == "/api/device/pair-requests" || uri.startsWith("/api/device/pair-requests/")) return false
+        return true
     }
 
     private fun isAuthorized(session: IHTTPSession, uri: String): Boolean {
         val providedApiKey = session.headers["x-api-key"] ?: session.parms["api_key"]
         if (providedApiKey == apiKey) return true
-        if (!uri.startsWith("/api/automations")) return false
+        if (uri == "/api/device/pair") return false
         val manager = automationManager ?: return false
-        val tokenHeader = session.headers["x-binding-token"]
-        val authorization = session.headers["authorization"]
-        val bearerToken = authorization
-            ?.takeIf { it.startsWith("Bearer ", ignoreCase = true) }
-            ?.removePrefix("Bearer ")
+        return manager.isValidBindingToken(bindingTokenFromSession(session))
+    }
+
+    private fun relayBinding(session: IHTTPSession): GatewayPairingRecord? {
+        val manager = automationManager ?: return null
+        return manager.bindingForToken(bindingTokenFromSession(session))
+    }
+
+    private fun bindingTokenFromSession(session: IHTTPSession): String? {
+        val tokenHeader = session.headers["x-binding-token"]?.trim()
+        if (!tokenHeader.isNullOrBlank()) return tokenHeader
+        val authorization = session.headers["authorization"]?.trim().orEmpty()
+        return authorization
+            .takeIf { it.startsWith("Bearer ", ignoreCase = true) }
+            ?.substringAfter(" ")
             ?.trim()
-        return manager.isValidBindingToken(tokenHeader) || manager.isValidBindingToken(bearerToken)
+            ?.takeIf { it.isNotBlank() }
     }
 
     private fun unauthorizedMessage(uri: String): String {
-        return if (uri.startsWith("/api/automations")) {
+        return if (uri != "/api/device/pair") {
             "Invalid or missing API key / binding token"
         } else {
             "Invalid or missing API key"
@@ -555,7 +746,7 @@ internal class GatewayServer(
     }
 
     private fun unauthorizedCode(uri: String): String {
-        return if (uri.startsWith("/api/automations")) {
+        return if (uri != "/api/device/pair") {
             GatewayRoutes.ERROR_INVALID_TOKEN
         } else {
             GatewayRoutes.ERROR_INVALID_API_KEY

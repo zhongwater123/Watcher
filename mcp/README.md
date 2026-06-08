@@ -5,11 +5,12 @@ MCP server that gives AI agents real-world perception through the [Watcher](http
 ## What it does
 
 - Discovers Watcher devices on the local network
-- Binds a device and caches connection details
+- Binds a device through phone-approved first-use pairing and caches connection details
 - Reads gateway capabilities and health
 - Captures live camera snapshots
 - Creates and manages monitoring/analysis tasks
 - Polls task events and commentary state
+- Relays phone-to-PC Agent chat handoff messages
 
 ## What it does not do
 
@@ -76,35 +77,65 @@ args = ["-y", "watcher-mcp"]
 
 | Tool | Description |
 |------|-------------|
-| `watcher_discover_devices` | Find Watcher devices on LAN via mDNS + subnet scan |
-| `watcher_bind_device` | Pair with a device using its URL and API key |
-| `watcher_get_device` | Read device identity and health |
-| `watcher_get_capabilities` | Read the gateway protocol contract |
-| `watcher_capture_snapshot` | Get current camera frame as JPEG |
-| `watcher_create_task` | Create a monitor or video_analysis task |
-| `watcher_list_tasks` | List recent tasks |
-| `watcher_get_task` | Get one task with status and events |
-| `watcher_list_task_events` | Poll task events incrementally |
-| `watcher_wait_for_condition` | Block until a matching event fires |
-| `watcher_cancel_task` | Cancel a running task |
-| `watcher_get_commentary_state` | Read live commentary state |
-| `watcher_list_commentary_entries` | Read commentary entries |
+| `watcher.discover_devices` | Find Watcher devices on LAN via mDNS + subnet scan |
+| `watcher.bind_device` | Pair with a device using phone approval, or using its URL and API key as a fallback |
+| `watcher.get_device` | Read device identity and health |
+| `watcher.get_capabilities` | Read the gateway protocol contract |
+| `watcher.capture_snapshot` | Get current camera frame as JPEG |
+| `watcher.create_task` | Create a monitor or video_analysis task |
+| `watcher.list_tasks` | List recent tasks |
+| `watcher.get_task` | Get one task with status and events |
+| `watcher.list_task_events` | Poll task events incrementally |
+| `watcher.wait_for_condition` | Block until a matching event fires |
+| `watcher.cancel_task` | Cancel a running task |
+| `watcher.get_commentary_state` | Read live commentary state |
+| `watcher.list_commentary_entries` | Read commentary entries |
+| `watcher.register_relay_conversation` | Register or update a PC Agent conversation visible on the phone |
+| `watcher.list_relay_conversations` | List relay conversations owned by the bound Agent |
+| `watcher.get_relay_messages` | Read phone and Agent messages for one relay conversation |
+| `watcher.send_relay_message` | Send a PC Agent reply back to the phone |
+| `watcher.mark_relay_messages_seen` | Mark phone-authored messages as seen by the PC Agent |
 
-## Typical flow
+## Pairing model
 
+`watcher.bind_device` supports two compatible paths:
+
+- With `apiKey`: uses the legacy `POST /api/device/pair` gateway route.
+- Without `apiKey`: discovers or uses `baseUrl`, creates `POST /api/device/pair-requests`, then polls until the phone approves, rejects, expires, or times out.
+
+After phone approval, Watcher returns a `bindingToken`. The MCP server caches it locally and uses it for later gateway calls.
+
+## Relay chat flow
+
+Watcher Relay Chat is a phone-visible handoff channel. It does not inject text into the native Claude Code or Codex input box. Instead, the PC Agent calls MCP tools to register its current work, read phone messages, and write replies back to the phone.
+
+```text
+1. Agent -> watcher.register_relay_conversation (title + summary of current PC work)
+2. User opens Watcher -> Multi-device -> Chat, selects the bound Agent and conversation
+3. User sends a phone message into the relay conversation
+4. Agent -> watcher.get_relay_messages
+5. Agent sees the phone message in its MCP tool result
+6. Agent -> watcher.send_relay_message
+7. Phone shows the Agent reply in the same conversation
 ```
-1. User: "备份项目当我离开工位"
-2. Agent → watcher_bind_device (if not cached)
-3. Agent → watcher_create_task (monitor: "detect user leaving desk")
-4. Agent → watcher_wait_for_condition (eventDataContains: "ALERT")
+
+## Typical automation flow
+
+```text
+1. User: "Back up the project when I leave my desk"
+2. Agent -> watcher.bind_device (if not cached; approve the first request on the phone)
+3. Agent -> watcher.create_task (monitor: "detect user leaving desk")
+4. Agent -> watcher.wait_for_condition (eventDataContains: "ALERT")
 5. Watcher detects user left
-6. Agent → git add && git commit && git push (using its own tools)
-7. Agent → watcher_cancel_task
+6. Agent -> git add && git commit && git push (using its own tools)
+7. Agent -> watcher.cancel_task
 ```
 
 ## Local state
 
-Device bindings are cached at `~/.watcher-mcp/devices.json`. This file contains your API keys — do not share it.
+Device bindings are cached at `~/.watcher-mcp/devices.json`. This file contains API keys or binding tokens; do not share it.
+
+For local test isolation, set `WATCHER_MCP_STATE_DIR` to override the state directory.
 
 ## Development
 
@@ -112,8 +143,8 @@ Device bindings are cached at `~/.watcher-mcp/devices.json`. This file contains 
 git clone https://github.com/AAswordman/Watcher.git
 cd Watcher/mcp
 npm install
-npm run check   # syntax validation
-npm test        # integration tests (31 assertions)
+npm run check
+npm test
 ```
 
 For local development, use a direct path in `.mcp.json`:

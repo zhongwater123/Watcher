@@ -1,5 +1,6 @@
 package com.example.watcher.data.repository
 
+import android.util.Log
 import com.example.watcher.data.model.RecordingScenario
 import com.example.watcher.data.model.VideoAnalysisResult
 import com.example.watcher.data.model.VideoProcessTaskDraft
@@ -10,6 +11,8 @@ import com.example.watcher.data.remote.VideoMessage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import java.io.IOException
+
+private const val TAG = "Watcher.Video.Analyzer"
 
 /**
  * Node 3: Segment analysis.
@@ -30,6 +33,8 @@ internal class VideoSegmentAnalyzer(
         segmentNumber: Int,
         segmentCount: Int
     ): VideoAnalysisResult {
+        val prompt = buildPrompt(task = task, segmentNumber = segmentNumber, segmentCount = segmentCount)
+        Log.d(TAG, "Segment $segmentNumber/$segmentCount prompt built length=${prompt.length} merged=$isMergedInput")
         val contentItems = buildList {
             if (!isMergedInput) {
                 audioFileId?.takeIf(String::isNotBlank)?.let { audioId ->
@@ -37,22 +42,22 @@ internal class VideoSegmentAnalyzer(
                 }
             }
             add(VideoContentItem(type = "input_video", fileId = fileId))
-            add(VideoContentItem(
-                type = "input_text",
-                text = buildPrompt(task = task, segmentNumber = segmentNumber, segmentCount = segmentCount)
-            ))
+            add(VideoContentItem(type = "input_text", text = prompt))
         }
+
         val request = DoubaoVideoRequest(
             model = videoModel,
             input = listOf(VideoMessage(role = "user", content = contentItems))
         )
 
+        Log.d(TAG, "Segment $segmentNumber API request sending model=$videoModel items=${contentItems.size}")
         val rawText = doRetryRemoteCall {
             apiService.analyzeVideo(
                 authorization = "Bearer $apiKey",
                 request = request
             ).requireOutputText("video segment analysis")
         }
+        Log.d(TAG, "Segment $segmentNumber API response length=${rawText.length} preview=${rawText.take(80)}")
 
         return VideoAnalysisResult(
             summary = extractNarrativeSummary(rawText),

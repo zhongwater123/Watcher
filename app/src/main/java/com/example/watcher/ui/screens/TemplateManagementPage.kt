@@ -10,7 +10,6 @@ import com.example.watcher.data.model.LlmProviderEntity
 import com.example.watcher.data.model.MemorySnapshot
 import com.example.watcher.data.model.MonitorTemplateEntity
 import com.example.watcher.data.model.VideoTemplateEntity
-import com.example.watcher.data.gateway.GatewayRuntimeStatus
 import com.example.watcher.ui.components.MotionDepth
 import com.example.watcher.ui.components.MotionStageSection
 import com.example.watcher.ui.components.PageScaffold
@@ -67,12 +66,6 @@ internal fun TemplateManagementPage(
     onExportCouncil: (CouncilTemplateEntity) -> String,
     onExportCouncilExpert: (CouncilExpertEntity) -> String,
     onImportTemplate: (String, (String) -> Unit) -> Unit,
-    gatewayRunning: Boolean,
-    gatewayStatus: GatewayRuntimeStatus,
-    gatewayPort: Int,
-    gatewayApiKey: String,
-    gatewayLocalIp: String,
-    onToggleGateway: (Boolean) -> Unit,
     currentPage: HubPage,
     pageOffset: Float
 ) {
@@ -138,17 +131,6 @@ internal fun TemplateManagementPage(
 
         MotionStageSection(pageOffset = pageOffset, depth = MotionDepth.Support) {
             MemorySystemCard(getMemorySnapshot = getMemorySnapshot)
-        }
-
-        MotionStageSection(pageOffset = pageOffset, depth = MotionDepth.Support) {
-            GatewaySettingsCard(
-                isRunning = gatewayRunning,
-                status = gatewayStatus,
-                port = gatewayPort,
-                apiKey = gatewayApiKey,
-                localIp = gatewayLocalIp,
-                onToggle = onToggleGateway
-            )
         }
 
         MotionStageSection(pageOffset = pageOffset, depth = MotionDepth.Support) {

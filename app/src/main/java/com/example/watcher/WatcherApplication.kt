@@ -10,6 +10,7 @@ import com.example.watcher.agentframework.service.AgentBrainCatalog
 import com.example.watcher.agentframework.service.AgentBrainConnectionTester
 import com.example.watcher.agentframework.service.AgentFrameworkService
 import com.example.watcher.agentframework.service.StaticAgentBrainCatalog
+import com.example.watcher.data.gateway.GatewayStateHolder
 import com.example.watcher.data.local.AppDatabase
 import com.example.watcher.data.local.litert.CompositeAgentBrainConnectionTester
 import com.example.watcher.data.local.litert.LITERT_BRAIN_FACTORY_ID
@@ -110,6 +111,8 @@ class AgentFrameworkContainer(
             )
         )
     }
+
+    val gatewayStateHolder: GatewayStateHolder by lazy { GatewayStateHolder() }
 
     val service: AgentFrameworkService by lazy {
         AgentFrameworkService.builder()

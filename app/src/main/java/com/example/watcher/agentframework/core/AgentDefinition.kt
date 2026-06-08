@@ -21,5 +21,9 @@ data class AgentRunConfig(
     val toolTimeoutMillis: Long = 30_000L,
     val enableReflectionCorrection: Boolean = true,
     val maxCorrectionAttemptsPerStep: Int = 2,
-    val maxCorrectionAttemptsPerRun: Int = 8
+    val maxCorrectionAttemptsPerRun: Int = 8,
+    val useGraphRuntime: Boolean = true,
+    val checkpointFrequency: Int = 1,
+    val enableHumanGate: Boolean = true,
+    val approvalTimeoutMillis: Long = 300_000L
 )

@@ -5,12 +5,12 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -49,12 +49,15 @@ internal fun GatewaySettingsCard(
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    Text("网关 API", style = MaterialTheme.typography.titleLarge)
+                    Text("Gateway API", style = MaterialTheme.typography.titleLarge)
                     Text(
-                        if (isRunning) "运行中 — 局域网设备可发现和调用" else "已关闭",
+                        if (isRunning) "运行中，局域网 Agent 可发现和调用" else "已关闭",
                         style = MaterialTheme.typography.bodySmall,
-                        color = if (isRunning) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.onSurfaceVariant
+                        color = if (isRunning) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
                     )
                 }
                 Switch(
@@ -65,8 +68,8 @@ internal fun GatewaySettingsCard(
             }
 
             Surface(
-                shape = RoundedCornerShape(12.dp),
-                tonalElevation = 2.dp,
+                shape = MaterialTheme.shapes.medium,
+                tonalElevation = 1.dp,
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(
@@ -78,7 +81,7 @@ internal fun GatewaySettingsCard(
                     })
                     InfoRow(label = "监听端口", value = effectivePort.toString())
                     InfoRow(label = "服务状态", value = if (status.isRunning) "running" else "stopped")
-                    InfoRow(label = "API 密钥", value = maskGatewayApiKey(apiKey), onCopy = {
+                    InfoRow(label = "API Key", value = maskGatewayApiKey(apiKey), onCopy = {
                         clipboard.setText(AnnotatedString(apiKey))
                     })
                     if (isRunning) {
@@ -87,20 +90,14 @@ internal fun GatewaySettingsCard(
                         InfoRow(label = "mDNS 服务", value = "_watcher._tcp")
                     }
                     InfoRow(label = "启动时间", value = formatGatewayTimestamp(status.startedAt))
-                    InfoRow(
-                        label = "最近请求",
-                        value = buildLastRequestSummary(status)
-                    )
-                    InfoRow(
-                        label = "最近错误",
-                        value = status.lastError ?: "无"
-                    )
+                    InfoRow(label = "最近请求", value = buildLastRequestSummary(status))
+                    InfoRow(label = "最近错误", value = status.lastError ?: "无")
                 }
             }
 
             if (isRunning) {
                 Text(
-                    "同局域网设备可通过 mDNS 自动发现此服务，或直接使用上方地址调用 API。界面默认只显示密钥掩码，复制时才会给出完整值。",
+                    "Gateway 面向同一局域网内已信任的 PC Agent。首次绑定建议使用手机确认流，API Key 仅作为兼容备用。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -155,7 +152,7 @@ private fun InfoRow(
             modifier = Modifier.weight(1f)
         )
         if (onCopy != null) {
-            androidx.compose.material3.TextButton(onClick = onCopy) {
+            TextButton(onClick = onCopy) {
                 Text("复制", style = MaterialTheme.typography.labelSmall)
             }
         }

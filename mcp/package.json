@@ -1,13 +1,13 @@
 {
   "name": "watcher-mcp",
-  "version": "0.3.0",
+  "version": "0.5.0",
   "type": "module",
   "license": "MIT",
   "description": "MCP server that gives AI agents real-world perception through the Watcher Android app gateway",
   "author": "Watcher Contributors",
   "repository": {
     "type": "git",
-    "url": "https://github.com/AAswordman/Watcher.git",
+    "url": "git+https://github.com/AAswordman/Watcher.git",
     "directory": "mcp"
   },
   "homepage": "https://github.com/AAswordman/Watcher/tree/main/mcp#readme",
@@ -23,7 +23,7 @@
     "iot"
   ],
   "bin": {
-    "watcher-mcp": "./server.js"
+    "watcher-mcp": "server.js"
   },
   "files": [
     "server.js",

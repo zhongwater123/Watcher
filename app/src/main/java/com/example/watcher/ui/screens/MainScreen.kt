@@ -51,10 +51,13 @@ import com.example.watcher.AgentConfigActivity
 import com.example.watcher.ApiWalletActivity
 import com.example.watcher.DigitalLifeCardActivity
 import com.example.watcher.LiteRtActivity
+import com.example.watcher.LocalAgentActivity
+import com.example.watcher.MultiDeviceActivity
 import com.example.watcher.PoseEstimationActivity
 import com.example.watcher.data.model.AiAudienceEntity
 import com.example.watcher.data.model.AiAudienceLiveState
 import com.example.watcher.data.model.DanmakuItem
+import com.example.watcher.data.gateway.GatewayPairingRequestStatus
 import com.example.watcher.data.model.InteractionMode
 import com.example.watcher.data.model.LiveCommentaryState
 import com.example.watcher.data.model.LiveSpeechState
@@ -141,6 +144,8 @@ fun MainScreen(
     val councilEntryUiState by viewModel.councilEntryUiState.collectAsStateWithLifecycle()
     val gatewayRunning by viewModel.gatewayRunning.collectAsStateWithLifecycle()
     val gatewayStatus by viewModel.gatewayStatus.collectAsStateWithLifecycle()
+    val gatewayPairingRequests by viewModel.gatewayPairingRequests.collectAsStateWithLifecycle()
+    val gatewayPairingBindings by viewModel.gatewayPairingBindings.collectAsStateWithLifecycle()
     val appUpdatePrompt by viewModel.appUpdatePrompt.collectAsStateWithLifecycle()
 
     var monitorRequestText by rememberSaveable(stateSaver = TextFieldValue.Saver) {
@@ -354,6 +359,14 @@ fun MainScreen(
         }
     }
 
+    val localAgentLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { /* No stream state to restore */ }
+
+    val multiDeviceLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { /* Gateway doesn't use camera stream, no reconnect needed */ }
+
     val baselineImagePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia()
     ) { uri: Uri? ->
@@ -458,6 +471,43 @@ fun MainScreen(
             dismissButton = {
                 TextButton(onClick = viewModel::dismissAppUpdatePrompt) {
                     Text("稍后")
+                }
+            }
+        )
+    }
+
+    val pendingGatewayPairingRequest = gatewayPairingRequests.firstOrNull {
+        it.status == GatewayPairingRequestStatus.Pending
+    }
+    if (pendingGatewayPairingRequest != null) {
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text("允许跨端 Agent 连接？") },
+            text = {
+                Text(
+                    listOf(
+                        "Agent：${pendingGatewayPairingRequest.bridgeName}",
+                        "来源：${pendingGatewayPairingRequest.sourceHost ?: "同一局域网设备"}",
+                        "批准后，它将通过 Watcher MCP 调用本机视觉与任务能力。"
+                    ).joinToString("\n")
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.approveGatewayPairingRequest(pendingGatewayPairingRequest.id)
+                    }
+                ) {
+                    Text("允许")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.rejectGatewayPairingRequest(pendingGatewayPairingRequest.id)
+                    }
+                ) {
+                    Text("拒绝")
                 }
             }
         )
@@ -620,6 +670,14 @@ fun MainScreen(
                         onRotaryRotationChange = { sharedRotaryRotationDegrees = it },
                         onNavigateMonitor = { navigateTo(HubPage.Monitor) },
                         onNavigateAnalysis = { navigateTo(HubPage.Analysis) },
+                        onNavigateMultiDevice = {
+                            multiDeviceLauncher.launch(MultiDeviceActivity.createIntent(context))
+                        },
+                        isGatewayRunning = gatewayRunning,
+                        pairedAgentCount = gatewayPairingBindings.size,
+                        pendingPairingCount = gatewayPairingRequests.count {
+                            it.status == GatewayPairingRequestStatus.Pending
+                        },
                         onNavigateDigitalLifeCard = {
                             viewModel.setStreamPlaying(false)
                             viewModel.updateVideoFrame(null)
@@ -628,6 +686,9 @@ fun MainScreen(
                         },
                         onNavigateLiteRt = {
                             liteRtLauncher.launch(LiteRtActivity.createIntent(context))
+                        },
+                        onNavigateLocalAgent = {
+                            localAgentLauncher.launch(LocalAgentActivity.createIntent(context))
                         },
                         onNavigatePoseEstimation = {
                             poseEstimationLauncher.launch(PoseEstimationActivity.createIntent(context))
@@ -776,12 +837,6 @@ fun MainScreen(
                         onExportCouncil = viewModel::exportCouncilTemplate,
                         onExportCouncilExpert = viewModel::exportCouncilExpertTemplate,
                         onImportTemplate = viewModel::importTemplate,
-                        gatewayRunning = gatewayRunning,
-                        gatewayStatus = gatewayStatus,
-                        gatewayPort = viewModel.gatewayPort,
-                        gatewayApiKey = viewModel.gatewayApiKey,
-                        gatewayLocalIp = viewModel.getLocalIpAddress(),
-                        onToggleGateway = viewModel::toggleGateway,
                         currentPage = HubPage.Templates,
                         pageOffset = pageOffset
                     )

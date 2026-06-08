@@ -47,7 +47,8 @@ fun PoseOverlay(
     modifier: Modifier = Modifier,
     mirrorHorizontally: Boolean = false,
     imageAspectRatio: Float = 4f / 3f,
-    moveColorIndex: Int = -1  // -1 = default colors, >=0 = rainbow index for segmentation
+    moveColorIndex: Int = -1,  // -1 = default colors, >=0 = rainbow index for segmentation
+    visibilityThreshold: Float = VISIBILITY_THRESHOLD  // Override for stricter filtering
 ) {
     Canvas(modifier = modifier) {
         val canvasWidth = size.width
@@ -96,7 +97,7 @@ fun PoseOverlay(
                 val start = poseSet.normalizedLandmarks.getOrNull(startIdx) ?: return@forEach
                 val end = poseSet.normalizedLandmarks.getOrNull(endIdx) ?: return@forEach
 
-                if (start.visibility < VISIBILITY_THRESHOLD || end.visibility < VISIBILITY_THRESHOLD) {
+                if (start.visibility < visibilityThreshold || end.visibility < visibilityThreshold) {
                     return@forEach
                 }
 
@@ -111,7 +112,7 @@ fun PoseOverlay(
 
             // Draw landmarks
             poseSet.normalizedLandmarks.forEach { landmark ->
-                if (landmark.visibility >= VISIBILITY_THRESHOLD) {
+                if (landmark.visibility >= visibilityThreshold) {
                     val pointColor = color.copy(alpha = landmark.visibility.coerceIn(0.4f, 1f))
                     drawCircle(
                         color = pointColor,

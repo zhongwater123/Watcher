@@ -1,6 +1,7 @@
 package com.example.watcher.data.repository
 
 import android.graphics.Bitmap
+import android.util.Log
 import com.example.watcher.data.local.TimelineEventDao
 import com.example.watcher.data.local.VideoProcessRunDao
 import com.example.watcher.data.local.VideoProcessTaskDao
@@ -23,6 +24,8 @@ import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.ceil
+
+private const val TAG = "Watcher.Video.Orchestrator"
 
 internal class VideoExecutionOrchestrator(
     private val taskDao: VideoProcessTaskDao,
@@ -47,6 +50,7 @@ internal class VideoExecutionOrchestrator(
         onStatus: suspend (VideoExecutionStatusUpdate) -> Unit
     ): VideoExecutionResult = coroutineScope {
         segmentProcessor.requireApiKey()
+        Log.i(TAG, "Task starting: title=${draft.title} segments=${draft.plannedSegmentCount} duration=${draft.plannedDurationSeconds}s")
         val task = saveTask(draft)
         val taskEntity = task.taskId?.let { taskDao.getTaskById(it) }
             ?: error("Failed to save the video task before execution.")
@@ -324,6 +328,7 @@ internal class VideoExecutionOrchestrator(
         }
 
         val captureEndedAt = System.currentTimeMillis()
+        Log.d(TAG, "Recording ended: segments=${recordedSegmentCount.get()} duration=${recordedDurationSeconds.get()}s")
         run = run.copy(
             status = VideoRunStatus.Summarizing,
             recordingEndedAt = run.recordingEndedAt ?: captureEndedAt,

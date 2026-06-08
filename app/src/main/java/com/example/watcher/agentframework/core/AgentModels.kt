@@ -42,6 +42,19 @@ sealed interface AgentAction {
         val reason: String,
         val success: Boolean = true
     ) : AgentAction
+
+    /**
+     * Request human approval before proceeding.
+     * The runtime will suspend execution until the approval is granted or rejected
+     * via the Gateway API.
+     */
+    data class RequestApproval(
+        val reason: String,
+        val pendingAction: String,
+        val riskLevel: String = "medium",
+        val toolName: String? = null,
+        val toolArguments: Map<String, Any?> = emptyMap()
+    ) : AgentAction
 }
 
 data class AgentDecision(

@@ -1,6 +1,18 @@
 package com.example.watcher.agentframework.autonomy
 
 import com.example.watcher.agentframework.core.AgentDefinition
+import com.example.watcher.agentframework.gate.AutoApproveGate
+import com.example.watcher.agentframework.gate.HumanGate
+import com.example.watcher.agentframework.graph.GraphCheckpointStore
+import com.example.watcher.agentframework.graph.GraphExecutionState
+import com.example.watcher.agentframework.graph.GraphLifecycleState
+import com.example.watcher.agentframework.graph.GraphRuntime
+import com.example.watcher.agentframework.graph.GraphRuntimeSnapshot
+import com.example.watcher.agentframework.graph.GraphStopReason
+import com.example.watcher.agentframework.graph.InMemoryGraphCheckpointStore
+import com.example.watcher.agentframework.graph.buildDefaultAgentGraph
+import com.example.watcher.agentframework.graph.toAutonomousLifecycleState
+import com.example.watcher.agentframework.graph.toAutonomousStopReason
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -24,7 +36,10 @@ class AutonomousAgentRuntime(
     private val config: AutonomousAgentConfig,
     private val modules: AutonomousAgentModules,
     parentScope: CoroutineScope,
-    sessionId: String = UUID.randomUUID().toString()
+    sessionId: String = UUID.randomUUID().toString(),
+    private val useGraphRuntime: Boolean = true,
+    private val humanGate: HumanGate = AutoApproveGate(),
+    private val checkpointStore: GraphCheckpointStore = InMemoryGraphCheckpointStore()
 ) {
     private val scope = CoroutineScope(parentScope.coroutineContext + SupervisorJob())
     private val mutex = Mutex()
@@ -108,6 +123,69 @@ class AutonomousAgentRuntime(
     }
 
     private suspend fun runLoop() {
+        if (useGraphRuntime) {
+            runGraphBased()
+            return
+        }
+        runLegacyLoop()
+    }
+
+    private suspend fun runGraphBased() {
+        if (snapshot.value.lifecycleState == AutonomousLifecycleState.Created) {
+            initialize()
+        }
+        setLifecycle(AutonomousLifecycleState.Running)
+
+        try {
+            val graph = buildDefaultAgentGraph()
+            val graphRuntime = GraphRuntime(
+                graph = graph,
+                definition = definition,
+                config = config,
+                modules = modules,
+                gate = humanGate,
+                checkpointStore = checkpointStore,
+                checkpointFrequency = config.maxRecords ?: 1,
+                parentScope = scope
+            )
+            val result = graphRuntime.execute(snapshot.value.sessionId)
+            mapGraphResultToSnapshot(result)
+        } catch (_: CancellationException) {
+            finish(
+                state = AutonomousLifecycleState.Destroyed,
+                stopReason = AutonomousStopReason.Cancelled
+            )
+        } catch (e: Exception) {
+            mutateSnapshot { state ->
+                state.copy(
+                    errorMessage = e.message ?: "Graph runtime failed",
+                    updatedAt = System.currentTimeMillis()
+                )
+            }
+            finish(
+                state = AutonomousLifecycleState.Failed,
+                stopReason = AutonomousStopReason.Error
+            )
+        }
+    }
+
+    private suspend fun mapGraphResultToSnapshot(result: GraphRuntimeSnapshot) {
+        val lifecycleState = result.lifecycleState.toAutonomousLifecycleState()
+        val stopReason = result.stopReason?.toAutonomousStopReason()
+        mutateSnapshot { state ->
+            state.copy(
+                lifecycleState = lifecycleState,
+                stopReason = stopReason,
+                cycle = result.cycle,
+                outputs = result.outputs,
+                errorMessage = result.errorMessage,
+                updatedAt = System.currentTimeMillis()
+            )
+        }
+        completeIfNeeded(snapshot.value)
+    }
+
+    private suspend fun runLegacyLoop() {
         if (snapshot.value.lifecycleState == AutonomousLifecycleState.Created) {
             initialize()
         }

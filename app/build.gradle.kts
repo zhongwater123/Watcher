@@ -179,6 +179,11 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
+        // Only include arm64 native libs (OpenCV AAR contains all ABIs ~110MB, arm64 only ~25MB)
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
+
         buildConfigField("String", "API_KEY", buildConfigString(""))
         buildConfigField("String", "VOLCENGINE_ASR_APP_KEY", buildConfigString(""))
         buildConfigField("String", "VOLCENGINE_ASR_ACCESS_KEY", buildConfigString(""))
@@ -243,12 +248,12 @@ android {
         checkReleaseBuilds = false
     }
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
     kotlin {
         compilerOptions {
-            jvmTarget.set(JvmTarget.JVM_11)
+            jvmTarget.set(JvmTarget.JVM_17)
         }
     }
     buildFeatures {
@@ -258,6 +263,12 @@ android {
     androidResources {
         noCompress += "litertlm"
         noCompress += "mp4"
+    }
+    packaging {
+        resources {
+            excludes += "META-INF/INDEX.LIST"
+            excludes += "META-INF/DEPENDENCIES"
+        }
     }
 }
 
@@ -431,12 +442,18 @@ dependencies {
     implementation(libs.androidx.media3.exoplayer)
     implementation(libs.androidx.media3.ui)
 
+    implementation("com.google.adk:google-adk-kotlin-core:0.2.0")
+    ksp("com.google.adk:google-adk-kotlin-processor:0.2.0")
+
     // MediaPipe pose estimation
     implementation(libs.mediapipe.tasks.vision)
 
     // TarsosDSP audio beat detection
     implementation(libs.tarsosdsp.core)
     implementation(libs.tarsosdsp.jvm)
+
+    // OpenCV for ArUco marker calibration
+    implementation("org.opencv:opencv:4.9.0")
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

@@ -36,7 +36,9 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -103,6 +105,12 @@ fun rememberMjpegStreamState(
     onStreamSourceChanged: (StreamSource) -> Unit = {},
     onRemoteStreamUnavailable: () -> Unit = {}
 ): MjpegStreamUiState {
+    // Stream reservation: pause when another component (e.g., AI Fitness) holds exclusive access
+    // This replaces lifecycle-based disconnection which broke background monitoring tasks
+    val streamReserved by com.example.watcher.data.repository.StreamReservation.owner
+        .collectAsState()
+    val effectivePlaying = isPlaying && streamReserved == null
+
     var currentFrame by remember { mutableStateOf<Bitmap?>(null) }
     var connectionStatus by remember { mutableStateOf<ConnectionStatus>(ConnectionStatus.Disconnected) }
     var fps by remember { mutableStateOf(0) }
@@ -124,8 +132,8 @@ fun rememberMjpegStreamState(
         onStreamSourceChanged(source)
     }
 
-    LaunchedEffect(isPlaying, settings.streamUrl, reconnectToken) {
-        if (!isPlaying) {
+    LaunchedEffect(effectivePlaying, settings.streamUrl, reconnectToken) {
+        if (!effectivePlaying) {
             fallbackRequested = false
             connectionStatus = ConnectionStatus.Disconnected
             currentFrame = null

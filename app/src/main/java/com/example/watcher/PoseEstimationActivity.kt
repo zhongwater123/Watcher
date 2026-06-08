@@ -18,6 +18,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.watcher.data.local.pose.PoseVideoSession
 import com.example.watcher.ui.screens.DanceFramePickerScreen
 import com.example.watcher.ui.screens.DancePracticeScreen
+import com.example.watcher.ui.screens.FitnessScreen
 import com.example.watcher.ui.screens.DanceLearningScreen
 import com.example.watcher.ui.screens.DancePosePlaybackScreen
 import com.example.watcher.ui.screens.DanceProcessingScreen
@@ -51,7 +52,7 @@ class PoseEstimationActivity : ComponentActivity() {
 }
 
 private enum class PoseScreen {
-    ScenarioSelect, Realtime, DanceLearning, DanceFramePicker, DanceProcessing, DancePlayback, DancePractice
+    ScenarioSelect, Realtime, DanceLearning, DanceFramePicker, DanceProcessing, DancePlayback, DancePractice, Fitness
 }
 
 @Composable
@@ -65,6 +66,7 @@ private fun PoseEstimationRouter(onClose: () -> Unit) {
             PoseScenarioSelectScreen(
                 onNavigateRealtime = { currentScreen = PoseScreen.Realtime },
                 onNavigateDanceLearning = { currentScreen = PoseScreen.DanceLearning },
+                onNavigateFitness = { currentScreen = PoseScreen.Fitness },
                 onClose = onClose
             )
         }
@@ -206,6 +208,23 @@ private fun PoseEstimationRouter(onClose: () -> Unit) {
             } else {
                 currentScreen = PoseScreen.DanceLearning
             }
+        }
+
+        PoseScreen.Fitness -> {
+            val activity = androidx.compose.ui.platform.LocalContext.current as? Activity
+            LaunchedEffect(Unit) {
+                activity?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+            }
+            FitnessScreen(
+                onBack = {
+                    // Navigate first (triggers compose disposal & engine release),
+                    // then restore orientation after a brief delay
+                    currentScreen = PoseScreen.ScenarioSelect
+                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                        activity?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                    }, 300)
+                }
+            )
         }
 
         PoseScreen.DancePractice -> {

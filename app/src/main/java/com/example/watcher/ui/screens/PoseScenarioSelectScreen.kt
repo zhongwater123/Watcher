@@ -66,6 +66,12 @@ enum class PoseScenario(
         description = "基于实时姿态的体感交互游戏",
         icon = Icons.Default.SportsEsports,
         enabled = false
+    ),
+    AI_FITNESS(
+        label = "AI健身",
+        description = "双摄像头姿态分析，正面+侧面实时监测",
+        icon = Icons.Default.Accessibility,
+        enabled = true
     )
 }
 
@@ -74,6 +80,7 @@ enum class PoseScenario(
 fun PoseScenarioSelectScreen(
     onNavigateRealtime: () -> Unit,
     onNavigateDanceLearning: () -> Unit,
+    onNavigateFitness: () -> Unit = {},
     onClose: () -> Unit
 ) {
     Scaffold(
@@ -126,6 +133,12 @@ fun PoseScenarioSelectScreen(
                 scenario = PoseScenario.MOTION_GAMING,
                 accentColor = Color(0xFF6A4CB0),
                 onClick = {}
+            )
+
+            ScenarioCard(
+                scenario = PoseScenario.AI_FITNESS,
+                accentColor = Color(0xFF1B8A3E),
+                onClick = onNavigateFitness
             )
 
             Spacer(modifier = Modifier.height(32.dp))

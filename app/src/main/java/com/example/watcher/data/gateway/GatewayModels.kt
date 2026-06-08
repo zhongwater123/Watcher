@@ -6,6 +6,8 @@ enum class GatewayTaskStatus { Pending, Running, Completed, Failed, Cancelled }
 /** Result of a task cancellation attempt. */
 enum class GatewayTaskCancelResult { Cancelled, AlreadyFinished, NotFound }
 
+const val GATEWAY_PAIRING_REQUEST_TTL_MILLIS = 10 * 60 * 1000L
+
 /** A task submitted through the gateway API. */
 data class GatewayTask(
     val id: String,
@@ -68,6 +70,42 @@ data class GatewayPairingResult(
     val bindingToken: String,
     val deviceId: String,
     val createdAt: Long = System.currentTimeMillis()
+)
+
+enum class GatewayPairingRequestStatus { Pending, Approved, Rejected, Expired }
+
+data class GatewayPairingRequest(
+    val id: String,
+    val bridgeId: String,
+    val bridgeName: String,
+    val sourceHost: String? = null,
+    val status: GatewayPairingRequestStatus = GatewayPairingRequestStatus.Pending,
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis(),
+    val expiresAt: Long = createdAt + GATEWAY_PAIRING_REQUEST_TTL_MILLIS,
+    val bindingToken: String? = null,
+    val deviceId: String? = null
+)
+
+data class GatewayRelayConversation(
+    val id: String,
+    val agentBridgeId: String,
+    val agentBridgeName: String,
+    val title: String,
+    val summary: String = "",
+    val status: String = "active",
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis(),
+    val lastMessageAt: Long? = null
+)
+
+data class GatewayRelayMessage(
+    val id: Long,
+    val conversationId: String,
+    val author: String,
+    val content: String,
+    val createdAt: Long = System.currentTimeMillis(),
+    val seenByAgentAt: Long? = null
 )
 
 data class GatewayAutomationTrigger(

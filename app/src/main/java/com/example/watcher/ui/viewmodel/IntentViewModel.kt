@@ -30,6 +30,8 @@ import com.example.watcher.data.model.VideoTemplateEntity
 import com.example.watcher.data.model.toMonitorTaskTemplate
 import com.example.watcher.data.model.toVideoTaskTemplate
 import com.example.watcher.data.gateway.GatewayRuntimeStatus
+import com.example.watcher.data.gateway.GatewayPairingRecord
+import com.example.watcher.data.gateway.GatewayPairingRequest
 import com.example.watcher.data.remote.RetrofitClient
 import com.example.watcher.data.repository.AndroidAlertNotifier
 import com.example.watcher.data.repository.AppUpdatePrompt
@@ -267,13 +269,19 @@ class IntentViewModel(application: Application) : AndroidViewModel(application) 
         streamUrlProvider = { monitorManager.currentStreamUrl },
         onStreamRelease = { _isStreamPlaying.value = false },
         onStreamReclaim = { reconnectStream() }
-    )
+    ).also {
+        appContext.watcherApplication().agentFrameworkContainer.gatewayStateHolder.delegate = it
+    }
     val gatewayRunning: StateFlow<Boolean> get() = gatewayDelegate.running
     val gatewayStatus: StateFlow<GatewayRuntimeStatus> get() = gatewayDelegate.status
+    val gatewayPairingRequests: StateFlow<List<GatewayPairingRequest>> get() = gatewayDelegate.pairingRequests
+    val gatewayPairingBindings: StateFlow<List<GatewayPairingRecord>> get() = gatewayDelegate.pairingBindings
     val gatewayApiKey: String get() = gatewayDelegate.apiKey
     val gatewayPort: Int get() = gatewayDelegate.port
     fun toggleGateway(enabled: Boolean) = gatewayDelegate.toggle(enabled)
     fun getLocalIpAddress(): String = gatewayDelegate.getLocalIpAddress()
+    fun approveGatewayPairingRequest(requestId: String) = gatewayDelegate.approvePairingRequest(requestId)
+    fun rejectGatewayPairingRequest(requestId: String) = gatewayDelegate.rejectPairingRequest(requestId)
 
     val monitorStatus: StateFlow<MonitorStatus> get() = monitorManager.monitorStatus
     val monitorLogs: StateFlow<List<MonitorLogEntry>> get() = monitorManager.monitorLogs
