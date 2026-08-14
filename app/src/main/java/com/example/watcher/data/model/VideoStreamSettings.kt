@@ -23,7 +23,9 @@ data class VideoStreamSettings(
     val notificationCooldownSeconds: Int = 20,
     val videoAnalysisStreamingEnabled: Boolean = false,
     val deviceProfile: String = DEVICE_PROFILE_ESP32,
-    val preferredWifiSsid: String = ""
+    val preferredWifiSsid: String = "",
+    val rotationDegrees: Int = 0,
+    val mirrorHorizontally: Boolean = false
 ) {
     companion object {
         const val DEFAULT_DEVICE_IP = "192.168.4.1"
@@ -68,20 +70,37 @@ data class VideoStreamSettings(
                 else -> DEVICE_PROFILE_ESP32
             }
         }
+
+        fun normalizeRotationDegrees(value: Int): Int {
+            val wrapped = ((value % 360) + 360) % 360
+            return when (wrapped) {
+                in 45 until 135 -> 90
+                in 135 until 225 -> 180
+                in 225 until 315 -> 270
+                else -> 0
+            }
+        }
+
+        fun shouldAutoConnect(settings: VideoStreamSettings?): Boolean {
+            return settings != null
+        }
     }
 
     private val normalizedPort: Int
         get() = port.takeIf { it in 1..65535 } ?: DEFAULT_PORT
 
+    private val deviceHost: String
+        get() = normalizeLocalDeviceHost(ipAddress)
+
     private val hostWithPort: String
         get() = if (normalizedPort == DEFAULT_PORT) {
-            ipAddress
+            deviceHost
         } else {
-            "$ipAddress:$normalizedPort"
+            "$deviceHost:$normalizedPort"
         }
 
     val streamUrl: String
-        get() = "http://$ipAddress:$DEFAULT_STREAM_PORT/stream"
+        get() = "http://$deviceHost:$DEFAULT_STREAM_PORT/stream"
 
     val streamDisplayUrl: String
         get() = streamUrl
@@ -97,7 +116,7 @@ data class VideoStreamSettings(
 
     fun normalized(): VideoStreamSettings {
         return copy(
-            ipAddress = ipAddress.trim().ifBlank { DEFAULT_DEVICE_IP },
+            ipAddress = normalizeLocalDeviceHost(ipAddress),
             port = normalizedPort,
             deviceId = deviceId.trim(),
             mdnsUrl = mdnsUrl.trim(),
@@ -108,7 +127,15 @@ data class VideoStreamSettings(
             changeThresholdPercent = changeThresholdPercent.coerceIn(1, 100),
             notificationCooldownSeconds = notificationCooldownSeconds.coerceIn(5, 300),
             deviceProfile = normalizeDeviceProfile(deviceProfile),
-            preferredWifiSsid = preferredWifiSsid
+            preferredWifiSsid = preferredWifiSsid,
+            rotationDegrees = normalizeRotationDegrees(rotationDegrees)
         )
+    }
+
+    fun requiresStreamReconnectComparedTo(previous: VideoStreamSettings?): Boolean {
+        val previousSettings = previous?.normalized() ?: return true
+        val currentSettings = normalized()
+        return currentSettings.copy(rotationDegrees = 0, mirrorHorizontally = false) !=
+            previousSettings.copy(rotationDegrees = 0, mirrorHorizontally = false)
     }
 }

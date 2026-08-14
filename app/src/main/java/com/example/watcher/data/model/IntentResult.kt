@@ -90,8 +90,9 @@ data class IntentResult(
                     append("\u8BF7\u76D1\u63A7\u5F53\u524D\u753B\u9762\uFF0C\u91CD\u70B9\u5173\u6CE8\uFF1A")
                     append(requirement)
                     append("\u3002\u8BF7\u5C06\u57FA\u51C6\u56FE\u89C6\u4E3A\u6B63\u5E38\u573A\u666F\uFF0C\u5224\u65AD\u5F53\u524D\u753B\u9762\u662F\u5426\u51FA\u73B0\u504F\u79BB\u3002")
-                    append("\u53EA\u8FD4\u56DE JSON\uFF0C\u5B57\u6BB5\u4E3A status\u3001summary\u3001reason\u3001confidence\u3002")
+                    append("\u53EA\u8FD4\u56DE JSON\uFF0C\u5B57\u6BB5\u4E3A status\u3001summary\u3001reason\u3001confidence\u3001remark\u3002")
                     append(" status \u53EA\u80FD\u662F ALERT\u3001WARNING\u3001NORMAL\u3001UNKNOWN\u3002")
+                    append(" remark \u662F\u7ED9\u7528\u6237\u7684\u4E00\u53E5\u7B80\u77ED\u4E2D\u4E8C\u75C5\u8D5B\u535A\u8BD7\u4EBA\u5F0F\u65C1\u767D\uFF0C\u4E0D\u80FD\u4E0E\u5224\u65AD\u51B2\u7A81\uFF0C\u4E0D\u80FD\u7F16\u9020\u753B\u9762\u4E8B\u5B9E\u3002")
                     append(" \u53C2\u8003\u573A\u666F\uFF1A")
                     append(sceneDescription)
                 }
@@ -106,8 +107,9 @@ data class IntentResult(
                             TargetTrigger.OnDisappear -> "\u5982\u679C\u76EE\u6807\u672A\u51FA\u73B0\u3001\u79BB\u5F00\u6216\u65E0\u6CD5\u7EF4\u6301\u5E94\u6709\u72B6\u6001\uFF0C\u5E94\u503E\u5411\u8FD4\u56DE ALERT \u6216 WARNING\u3002"
                         }
                     )
-                    append("\u53EA\u8FD4\u56DE JSON\uFF0C\u5B57\u6BB5\u4E3A status\u3001summary\u3001reason\u3001confidence\u3002")
+                    append("\u53EA\u8FD4\u56DE JSON\uFF0C\u5B57\u6BB5\u4E3A status\u3001summary\u3001reason\u3001confidence\u3001remark\u3002")
                     append(" status \u53EA\u80FD\u662F ALERT\u3001WARNING\u3001NORMAL\u3001UNKNOWN\u3002")
+                    append(" remark \u662F\u7ED9\u7528\u6237\u7684\u4E00\u53E5\u7B80\u77ED\u4E2D\u4E8C\u75C5\u8D5B\u535A\u8BD7\u4EBA\u5F0F\u65C1\u767D\uFF0C\u4E0D\u80FD\u4E0E\u5224\u65AD\u51B2\u7A81\uFF0C\u4E0D\u80FD\u7F16\u9020\u753B\u9762\u4E8B\u5B9E\u3002")
                     append(" \u53C2\u8003\u76EE\u6807\uFF1A")
                     append(sceneDescription)
                 }

@@ -12,6 +12,15 @@ interface TimelineEventDao {
     @Query("SELECT * FROM timeline_events WHERE runId = :runId ORDER BY timestampSeconds ASC, id ASC")
     fun observeEventsForRun(runId: Long): Flow<List<TimelineEventEntity>>
 
+    @Query("SELECT * FROM timeline_events WHERE runId = :runId ORDER BY timestampSeconds ASC, id ASC LIMIT :limit")
+    fun observeEventsForRunLimited(runId: Long, limit: Int): Flow<List<TimelineEventEntity>>
+
+    @Query("SELECT COUNT(*) FROM timeline_events WHERE runId = :runId")
+    fun observeEventCountForRun(runId: Long): Flow<Int>
+
+    @Query("SELECT * FROM timeline_events WHERE runId = :runId ORDER BY timestampSeconds ASC, id ASC")
+    suspend fun getEventsForRun(runId: Long): List<TimelineEventEntity>
+
     @Query("DELETE FROM timeline_events WHERE runId = :runId")
     suspend fun deleteByRunId(runId: Long)
 

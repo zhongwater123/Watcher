@@ -30,6 +30,9 @@ data class DeviceRuntimeInfo(
     val hasWifiConnectFailure: Boolean
         get() = wifiConnectResult.isNotBlank() &&
             !wifiConnectResult.equals("success", ignoreCase = true)
+
+    val isProvisioningFailureFallback: Boolean
+        get() = isApMode && wifiFallbackToAp && hasWifiConnectFailure
 }
 
 data class ProvisionWifiNetwork(

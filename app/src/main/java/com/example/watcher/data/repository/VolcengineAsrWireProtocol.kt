@@ -118,7 +118,7 @@ internal object VolcengineAsrWireProtocol {
         var sequence: Int? = null
         var errorCode: Int? = null
 
-        if (messageType == MESSAGE_TYPE_FULL_SERVER_RESPONSE) {
+        if (messageType == MESSAGE_TYPE_FULL_SERVER_RESPONSE && flags.hasSequenceNumber()) {
             sequence = readInt(frame, offset)
             offset += 4
         } else if (messageType == MESSAGE_TYPE_ERROR_RESPONSE) {
@@ -159,6 +159,18 @@ internal object VolcengineAsrWireProtocol {
             serialization = SERIALIZATION_JSON,
             compression = COMPRESSION_GZIP,
             sequence = sequence,
+            payload = payload
+        )
+    }
+
+    fun encodeServerResponseWithoutSequenceForTest(payloadText: String): ByteArray {
+        val payload = gzip(payloadText.toByteArray(Charsets.UTF_8))
+        return encodeFrame(
+            messageType = MESSAGE_TYPE_FULL_SERVER_RESPONSE,
+            flags = FLAG_NONE,
+            serialization = SERIALIZATION_JSON,
+            compression = COMPRESSION_GZIP,
+            sequence = null,
             payload = payload
         )
     }
@@ -243,7 +255,10 @@ internal object VolcengineAsrWireProtocol {
     ): ByteArray {
         val out = ByteArrayOutputStream()
         out.write(buildHeader(messageType, flags, serialization, compression))
-        if (messageType == MESSAGE_TYPE_FULL_SERVER_RESPONSE || messageType == MESSAGE_TYPE_ERROR_RESPONSE) {
+        if (
+            (messageType == MESSAGE_TYPE_FULL_SERVER_RESPONSE && flags.hasSequenceNumber()) ||
+            messageType == MESSAGE_TYPE_ERROR_RESPONSE
+        ) {
             out.write(intToBytes(sequence ?: 0))
         }
         out.write(intToBytes(payload.size))
@@ -277,6 +292,10 @@ internal object VolcengineAsrWireProtocol {
             .order(ByteOrder.BIG_ENDIAN)
             .putInt(value)
             .array()
+    }
+
+    private fun Int.hasSequenceNumber(): Boolean {
+        return this == FLAG_SEQUENCE_POSITIVE || this == FLAG_SEQUENCE_NEGATIVE
     }
 
     private fun gzip(data: ByteArray): ByteArray {

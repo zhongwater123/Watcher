@@ -122,6 +122,58 @@ class ModelOutputParserTest {
     }
 
     @Test
+    fun `monitor decision parsing keeps cyber poetic remark`() {
+        val raw = """
+            {
+              "status": "ALERT",
+              "summary": "Target appeared",
+              "reason": "The reference target is visible in the frame",
+              "confidence": 0.91,
+              "remark": "警戒线亮起，沉睡的镜头已拔出光剑。"
+            }
+        """.trimIndent()
+
+        val decision = ModelOutputParser.parseMonitorDecision(raw)
+
+        assertEquals(CheckResult.ALERT, decision.result)
+        assertEquals("Target appeared", decision.summary)
+        assertEquals("警戒线亮起，沉睡的镜头已拔出光剑。", decision.remark)
+    }
+
+    @Test
+    fun `monitor decision parsing accepts remark aliases`() {
+        val raw = """
+            {
+              "status": "NORMAL",
+              "summary": "Scene is stable",
+              "comment": "命运的像素仍在原地发光。"
+            }
+        """.trimIndent()
+
+        val decision = ModelOutputParser.parseMonitorDecision(raw)
+
+        assertEquals(CheckResult.NORMAL, decision.result)
+        assertEquals("命运的像素仍在原地发光。", decision.remark)
+    }
+
+    @Test
+    fun `monitor decision parsing treats message as remark when summary is explicit`() {
+        val raw = """
+            {
+              "status": "NORMAL",
+              "summary": "Scene is stable",
+              "message": "观测线安静燃烧，世界暂未偏航。"
+            }
+        """.trimIndent()
+
+        val decision = ModelOutputParser.parseMonitorDecision(raw)
+
+        assertEquals(CheckResult.NORMAL, decision.result)
+        assertEquals("Scene is stable", decision.summary)
+        assertEquals("观测线安静燃烧，世界暂未偏航。", decision.remark)
+    }
+
+    @Test
     fun `extract json handles reasoning text around payload`() {
         val raw = """
             The model thought about the scene first.
@@ -143,6 +195,7 @@ class ModelOutputParserTest {
         val decision = ModelOutputParser.parseMonitorDecision("I am not sure what happened.")
 
         assertEquals(CheckResult.UNKNOWN, decision.result)
+        assertEquals("", decision.remark)
         assertTrue(decision.reason.contains("JSON"))
     }
 

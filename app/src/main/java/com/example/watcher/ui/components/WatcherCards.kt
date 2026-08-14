@@ -148,10 +148,13 @@ internal fun CameraPreviewCard(
     onOpenSettings: () -> Unit,
     compact: Boolean,
     showFooterText: Boolean = true,
-    showAiBadge: Boolean = false
+    showAiBadge: Boolean = false,
+    showFrameRatePill: Boolean = true,
+    previewActive: Boolean = true
 ) {
     val extendedColors = LocalWatcherExtendedColors.current
     val cardShape = RoundedCornerShape(if (compact) 28.dp else 36.dp)
+    val previewFrame = if (previewActive) streamState.currentFrame else null
     val showReconnect = !isPlaying ||
         streamState.connectionStatus is ConnectionStatus.Error ||
         streamState.connectionStatus == ConnectionStatus.Disconnected
@@ -178,8 +181,13 @@ internal fun CameraPreviewCard(
                     )
                 )
         ) {
-            PreviewImage(streamState = streamState)
-            PreviewHeader(streamState = streamState, showAiBadge = showAiBadge)
+            PreviewImage(streamState = streamState, currentFrame = previewFrame)
+            PreviewHeader(
+                streamState = streamState,
+                showAiBadge = showAiBadge,
+                showFrameRatePill = showFrameRatePill,
+                compact = compact
+            )
             if (showFooterText) {
                 PreviewFooter(
                     title = title,
@@ -191,7 +199,7 @@ internal fun CameraPreviewCard(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .padding(16.dp),
-                currentFrame = streamState.currentFrame,
+                currentFrame = previewFrame,
                 showReconnect = showReconnect,
                 onPlayingChange = onPlayingChange,
                 onReconnect = onReconnect,
@@ -205,7 +213,9 @@ internal fun CameraPreviewCard(
 @Composable
 private fun PreviewHeader(
     streamState: MjpegStreamUiState,
-    showAiBadge: Boolean
+    showAiBadge: Boolean,
+    showFrameRatePill: Boolean,
+    compact: Boolean = false
 ) {
     Row(
         modifier = Modifier
@@ -215,11 +225,13 @@ private fun PreviewHeader(
         verticalAlignment = Alignment.Top
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            StatusPill(
-                text = connectionHeadline(streamState.connectionStatus),
-                accent = connectionColor(streamState.connectionStatus)
-            )
-            if (streamState.connectionStatus is ConnectionStatus.Connected) {
+            if (!compact) {
+                StatusPill(
+                    text = connectionHeadline(streamState.connectionStatus),
+                    accent = connectionColor(streamState.connectionStatus)
+                )
+            }
+            if (showFrameRatePill && streamState.connectionStatus is ConnectionStatus.Connected) {
                 StatusPill(
                     text = buildString {
                         append("${streamState.fps} FPS")
@@ -232,7 +244,7 @@ private fun PreviewHeader(
                 )
             }
         }
-        if (showAiBadge) {
+        if (showAiBadge && !compact) {
             StatusPill(text = "AI ready", accent = MaterialTheme.colorScheme.tertiary)
         }
     }
@@ -299,17 +311,19 @@ private fun BoxScope.PreviewActions(
         ) {
             Icon(Icons.Default.CameraAlt, contentDescription = null)
             Spacer(modifier = Modifier.width(6.dp))
-            Text("Snapshot")
+            Text("截图")
         }
     }
 }
 
 @Composable
-private fun BoxScope.PreviewImage(streamState: MjpegStreamUiState) {
-    val frame = streamState.currentFrame
-    if (frame != null) {
+private fun BoxScope.PreviewImage(
+    streamState: MjpegStreamUiState,
+    currentFrame: Bitmap?
+) {
+    if (currentFrame != null) {
         Image(
-            bitmap = frame.asImageBitmap(),
+            bitmap = currentFrame.asImageBitmap(),
             contentDescription = "Camera preview",
             modifier = Modifier.fillMaxSize(),
             contentScale = ContentScale.Crop

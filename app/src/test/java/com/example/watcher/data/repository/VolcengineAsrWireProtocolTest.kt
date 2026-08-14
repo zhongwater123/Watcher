@@ -4,6 +4,7 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.json.JSONObject
@@ -53,6 +54,20 @@ class VolcengineAsrWireProtocolTest {
         assertEquals(7, decoded.sequence)
         assertEquals(VolcengineAsrWireProtocol.FLAG_SEQUENCE_NEGATIVE, decoded.flags)
         assertTrue(decoded.isLastPacket)
+        assertEquals(payload, decoded.payloadText)
+    }
+
+    @Test
+    fun decodesServerResponseWithoutSequenceWhenFlagIsNone() {
+        val payload = """{"code":0,"result":{"text":"ready"}}"""
+
+        val decoded = VolcengineAsrWireProtocol.decode(
+            VolcengineAsrWireProtocol.encodeServerResponseWithoutSequenceForTest(payload)
+        )
+
+        assertEquals(VolcengineAsrWireProtocol.MESSAGE_TYPE_FULL_SERVER_RESPONSE, decoded.messageType)
+        assertEquals(VolcengineAsrWireProtocol.FLAG_NONE, decoded.flags)
+        assertNull(decoded.sequence)
         assertEquals(payload, decoded.payloadText)
     }
 

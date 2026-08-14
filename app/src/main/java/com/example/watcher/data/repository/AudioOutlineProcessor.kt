@@ -28,7 +28,8 @@ internal class AudioOutlineProcessor(
     private val remoteFileResolver: VideoRemoteFileResolver,
     private val audioAssetBuilder: VideoAudioAssetBuilder,
     private val audioModel: String,
-    private val apiKey: String
+    private val apiKey: String,
+    private val traceLogger: VideoAiTraceLogger
 ) {
 
     suspend fun buildMasterAudioFromFiles(
@@ -38,12 +39,14 @@ internal class AudioOutlineProcessor(
         expectedDurationMs: Long
     ): File? {
         if (segmentFiles.isEmpty()) return null
-        val asset = audioAssetBuilder.buildMasterAudioAssetFromAudioFiles(
-            runId = runId,
-            audioSources = segmentFiles,
-            outputRoot = outputRoot,
-            expectedDurationMs = expectedDurationMs
-        )
+        val asset = withContext(Dispatchers.IO) {
+            audioAssetBuilder.buildMasterAudioAssetFromAudioFiles(
+                runId = runId,
+                audioSources = segmentFiles,
+                outputRoot = outputRoot,
+                expectedDurationMs = expectedDurationMs
+            )
+        }
         audioAssetDao.upsert(asset)
         val file = File(asset.localFilePath)
         if (file.exists() && file.length() > 0L) {
@@ -73,12 +76,14 @@ internal class AudioOutlineProcessor(
                     ?.takeIf(File::exists)
             }
         if (segmentFiles.isEmpty()) return null
-        val asset = audioAssetBuilder.buildMasterAudioAssetFromAudioFiles(
-            runId = runId,
-            audioSources = segmentFiles,
-            outputRoot = outputRoot,
-            expectedDurationMs = expectedDurationMs
-        )
+        val asset = withContext(Dispatchers.IO) {
+            audioAssetBuilder.buildMasterAudioAssetFromAudioFiles(
+                runId = runId,
+                audioSources = segmentFiles,
+                outputRoot = outputRoot,
+                expectedDurationMs = expectedDurationMs
+            )
+        }
         audioAssetDao.upsert(asset)
         File(asset.localFilePath)
             .takeIf { it.exists() && it.length() > 0L }
@@ -98,8 +103,18 @@ internal class AudioOutlineProcessor(
         runId: Long,
         audioFile: File,
         task: VideoProcessTaskDraft,
-        durationSeconds: Int
+        durationSeconds: Int,
+        traceId: String
     ): VideoAnalysisResult {
+        val context = VideoAiTraceContext(
+            traceId = traceId,
+            runId = runId,
+            taskId = task.taskId,
+            node = "AudioOutlineProcessor",
+            model = audioModel,
+            requestKind = "audio_outline"
+        )
+        val startedAt = System.currentTimeMillis()
         Log.d(TAG, "Generating outline: audioFile=${audioFile.name} size=${audioFile.length()} duration=${durationSeconds}s")
         // Extract raw ADTS AAC from the MediaMuxer-produced .m4a for upload.
         // MediaMuxer's MP4 container is detected as video/mp4 by Ark, causing input_audio rejection.
@@ -140,21 +155,56 @@ internal class AudioOutlineProcessor(
             input = listOf(VideoMessage(role = "user", content = contentItems))
         )
 
-        val rawText = retryRemoteCall {
-            apiService.analyzeVideo(
-                authorization = bearerToken(),
-                request = request
-            ).requireOutputText("audio outline generation")
-        }
+        return try {
+            traceLogger.beginNode(
+                context,
+                aiTracePayload(
+                    "audioFilePath" to audioFile.absolutePath,
+                    "uploadFilePath" to uploadFile.absolutePath,
+                    "audioFileId" to remoteAudio.fileId,
+                    "mediaType" to audioMediaType,
+                    "durationSeconds" to durationSeconds
+                )
+            )
+            traceLogger.logPrompt(context, basePrompt = prompt, renderedPrompt = prompt)
+            traceLogger.logRequest(
+                context,
+                aiTracePayload(
+                    "model" to request.model,
+                    "audioFileId" to remoteAudio.fileId,
+                    "mediaType" to audioMediaType,
+                    "promptLength" to prompt.length
+                )
+            )
+            val rawText = retryRemoteCall {
+                apiService.analyzeVideo(
+                    authorization = bearerToken(),
+                    request = request
+                ).requireOutputText("audio outline generation")
+            }
 
-        Log.d(TAG, "Outline generated: length=${rawText.length} firstLine=${rawText.lines().firstOrNull()?.take(60)}")
-        return VideoAnalysisResult(
-            summary = rawText.lines().firstOrNull { it.isNotBlank() }?.removePrefix("# ") ?: "",
-            conclusion = "",
-            timelineEvents = emptyList(),
-            rawResponse = rawText,
-            markdownNote = rawText
-        )
+            val durationMs = System.currentTimeMillis() - startedAt
+            Log.d(TAG, "Outline generated: length=${rawText.length} firstLine=${rawText.lines().firstOrNull()?.take(60)}")
+            val summary = rawText.lines().firstOrNull { it.isNotBlank() }?.removePrefix("# ") ?: ""
+            traceLogger.logResponse(context, rawText, durationMs)
+            traceLogger.logParsed(
+                context = context,
+                parsedSummary = summary,
+                parsedJson = aiTracePayload("parseStatus" to "success", "summary" to summary),
+                parseStatus = "success"
+            )
+            traceLogger.finishNode(context, durationMs)
+            VideoAnalysisResult(
+                summary = summary,
+                conclusion = "",
+                timelineEvents = emptyList(),
+                rawResponse = rawText,
+                markdownNote = rawText
+            )
+        } catch (error: Throwable) {
+            traceLogger.logError(context, error, System.currentTimeMillis() - startedAt)
+            throw error
+        }
     }
 
     /**

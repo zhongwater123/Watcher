@@ -15,6 +15,7 @@ import com.example.watcher.data.model.CouncilExpertEntity
 import com.example.watcher.data.model.CouncilKnowledgeEntity
 import com.example.watcher.data.model.CouncilTemplateEntity
 import com.example.watcher.data.model.TimelineEventEntity
+import com.example.watcher.data.model.VideoAiTraceEventEntity
 import com.example.watcher.data.model.VideoAudioAssetEntity
 import com.example.watcher.data.model.VideoProcessRun
 import com.example.watcher.data.model.VideoProcessTask
@@ -29,7 +30,27 @@ import com.example.watcher.data.model.BlackboardEntry
 import com.example.watcher.data.model.BlackboardObservationItem
 import com.example.watcher.data.model.BehaviorClaim
 import com.example.watcher.data.model.BehaviorReasoningLog
+import com.example.watcher.data.model.ClassroomNoteFollowupEntity
+import com.example.watcher.data.model.ClassroomTranscriptConsumptionEntity
 import com.example.watcher.data.model.CouncilExpertDefaults
+import com.example.watcher.data.model.FitnessAgentRunEntity
+import com.example.watcher.data.model.FitnessExerciseEntity
+import com.example.watcher.data.model.FitnessExerciseInstructionEntity
+import com.example.watcher.data.model.FitnessExerciseInstructionStepEntity
+import com.example.watcher.data.model.FitnessExerciseLibraryMetaEntity
+import com.example.watcher.data.model.FitnessExerciseResultEntity
+import com.example.watcher.data.model.FitnessMediaAssetEntity
+import com.example.watcher.data.model.FitnessRealtimeFeedbackEventEntity
+import com.example.watcher.data.model.FitnessRepEventEntity
+import com.example.watcher.data.model.FitnessExerciseSecondaryMuscleEntity
+import com.example.watcher.data.model.FitnessStrategyGoalEntity
+import com.example.watcher.data.model.FitnessStrategySpecEntity
+import com.example.watcher.data.model.FitnessSessionResultEntity
+import com.example.watcher.data.model.FitnessUserProfileEntity
+import com.example.watcher.data.model.FitnessWeeklyLedgerEntity
+import com.example.watcher.data.model.FitnessWorkoutExerciseEntity
+import com.example.watcher.data.model.FitnessWorkoutLogEntity
+import com.example.watcher.data.model.FitnessWorkoutPlanEntity
 import com.example.watcher.data.model.LlmProviderEntity
 import com.example.watcher.data.model.ObservationGoal
 import com.example.watcher.data.model.PortraitDimension
@@ -49,6 +70,9 @@ import com.example.watcher.data.model.VideoTemplateEntity
         VideoAudioAssetEntity::class,
         VideoRemoteFileBindingEntity::class,
         VideoSpeechTranscriptEntity::class,
+        ClassroomTranscriptConsumptionEntity::class,
+        ClassroomNoteFollowupEntity::class,
+        VideoAiTraceEventEntity::class,
         TimelineEventEntity::class,
         MonitorTemplateEntity::class,
         VideoTemplateEntity::class,
@@ -66,9 +90,27 @@ import com.example.watcher.data.model.VideoTemplateEntity
         BehaviorReasoningLog::class,
         ObservationGoal::class,
         SceneProfile::class,
+        FitnessUserProfileEntity::class,
+        FitnessMediaAssetEntity::class,
+        FitnessStrategyGoalEntity::class,
+        FitnessStrategySpecEntity::class,
+        FitnessWeeklyLedgerEntity::class,
+        FitnessWorkoutPlanEntity::class,
+        FitnessWorkoutExerciseEntity::class,
+        FitnessWorkoutLogEntity::class,
+        FitnessSessionResultEntity::class,
+        FitnessExerciseResultEntity::class,
+        FitnessRealtimeFeedbackEventEntity::class,
+        FitnessRepEventEntity::class,
+        FitnessAgentRunEntity::class,
+        FitnessExerciseEntity::class,
+        FitnessExerciseInstructionEntity::class,
+        FitnessExerciseInstructionStepEntity::class,
+        FitnessExerciseSecondaryMuscleEntity::class,
+        FitnessExerciseLibraryMetaEntity::class,
         com.example.watcher.data.local.pose.PoseVideoSession::class
     ],
-    version = 57,
+    version = 70,
     exportSchema = false
 )
 @TypeConverters(DatabaseConverters::class)
@@ -84,6 +126,9 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun videoAudioAssetDao(): VideoAudioAssetDao
     abstract fun videoRemoteFileBindingDao(): VideoRemoteFileBindingDao
     abstract fun videoSpeechTranscriptDao(): VideoSpeechTranscriptDao
+    abstract fun classroomTranscriptConsumptionDao(): ClassroomTranscriptConsumptionDao
+    abstract fun classroomNoteFollowupDao(): ClassroomNoteFollowupDao
+    abstract fun videoAiTraceDao(): VideoAiTraceDao
     abstract fun timelineEventDao(): TimelineEventDao
     abstract fun templateDao(): TemplateDao
     abstract fun councilExpertDao(): CouncilExpertDao
@@ -96,6 +141,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun behaviorModelDao(): BehaviorModelDao
     abstract fun sceneProfileDao(): SceneProfileDao
     abstract fun poseVideoSessionDao(): PoseVideoSessionDao
+    abstract fun fitnessCompanionDao(): FitnessCompanionDao
+    abstract fun exerciseLibraryDao(): ExerciseLibraryDao
 
     companion object {
         private val MIGRATION_11_12 = object : Migration(11, 12) {
@@ -1253,6 +1300,584 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_57_58 = object : Migration(57, 58) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE `video_process_runs` ADD COLUMN `aiTraceId` TEXT NOT NULL DEFAULT ''")
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `video_ai_trace_events` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `traceId` TEXT NOT NULL,
+                        `runId` INTEGER,
+                        `taskId` INTEGER,
+                        `node` TEXT NOT NULL,
+                        `phase` TEXT NOT NULL,
+                        `segmentIndex` INTEGER,
+                        `chunkIndex` INTEGER,
+                        `model` TEXT NOT NULL,
+                        `requestKind` TEXT NOT NULL,
+                        `promptText` TEXT NOT NULL,
+                        `requestPayloadJson` TEXT NOT NULL,
+                        `rawResponseText` TEXT NOT NULL,
+                        `parsedSummary` TEXT NOT NULL,
+                        `parsedJson` TEXT NOT NULL,
+                        `errorMessage` TEXT NOT NULL,
+                        `durationMs` INTEGER NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        `sequence` INTEGER NOT NULL,
+                        `contentHash` TEXT NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_video_ai_trace_events_traceId` ON `video_ai_trace_events` (`traceId`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_video_ai_trace_events_runId` ON `video_ai_trace_events` (`runId`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_video_ai_trace_events_taskId` ON `video_ai_trace_events` (`taskId`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_video_ai_trace_events_node` ON `video_ai_trace_events` (`node`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_video_ai_trace_events_createdAt` ON `video_ai_trace_events` (`createdAt`)")
+            }
+        }
+
+        private val MIGRATION_58_59 = object : Migration(58, 59) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE `video_speech_transcripts` ADD COLUMN `globalStartMs` INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE `video_speech_transcripts` ADD COLUMN `globalEndMs` INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE `video_speech_transcripts` ADD COLUMN `definite` INTEGER NOT NULL DEFAULT 1")
+                database.execSQL("ALTER TABLE `video_speech_transcripts` ADD COLUMN `wordsJson` TEXT NOT NULL DEFAULT ''")
+                database.execSQL("ALTER TABLE `video_speech_transcripts` ADD COLUMN `source` TEXT NOT NULL DEFAULT 'legacy'")
+                database.execSQL("ALTER TABLE `video_speech_transcripts` ADD COLUMN `asrLogId` TEXT NOT NULL DEFAULT ''")
+                database.execSQL("UPDATE `video_speech_transcripts` SET `globalStartMs` = `timestamp`, `globalEndMs` = `timestamp`, `definite` = `isFinal`")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_video_speech_transcripts_globalStartMs` ON `video_speech_transcripts` (`globalStartMs`)")
+            }
+        }
+
+        private val MIGRATION_59_60 = object : Migration(59, 60) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `classroom_transcript_consumptions` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `runId` INTEGER NOT NULL,
+                        `transcriptId` INTEGER NOT NULL,
+                        `selectionOrder` INTEGER NOT NULL,
+                        `weightLevel` TEXT NOT NULL,
+                        `isSelected` INTEGER NOT NULL,
+                        `isAnswered` INTEGER NOT NULL,
+                        `questionType` TEXT NOT NULL,
+                        `questionText` TEXT NOT NULL,
+                        `answerText` TEXT NOT NULL,
+                        `contextStartMs` INTEGER NOT NULL,
+                        `contextEndMs` INTEGER NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        FOREIGN KEY(`runId`) REFERENCES `video_process_runs`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE,
+                        FOREIGN KEY(`transcriptId`) REFERENCES `video_speech_transcripts`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_classroom_transcript_consumptions_runId` ON `classroom_transcript_consumptions` (`runId`)")
+                database.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_classroom_transcript_consumptions_transcriptId` ON `classroom_transcript_consumptions` (`transcriptId`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_classroom_transcript_consumptions_selectionOrder` ON `classroom_transcript_consumptions` (`selectionOrder`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_classroom_transcript_consumptions_isAnswered` ON `classroom_transcript_consumptions` (`isAnswered`)")
+            }
+        }
+
+        private val MIGRATION_60_61 = object : Migration(60, 61) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE `classroom_transcript_consumptions` ADD COLUMN `visualFrameTimestampMs` INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE `classroom_transcript_consumptions` ADD COLUMN `visualFramePath` TEXT NOT NULL DEFAULT ''")
+                database.execSQL("ALTER TABLE `classroom_transcript_consumptions` ADD COLUMN `visualFrameStatus` TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
+        private val MIGRATION_61_62 = object : Migration(61, 62) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE `video_stream_settings` ADD COLUMN `rotationDegrees` INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE `video_stream_settings` ADD COLUMN `mirrorHorizontally` INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        private val MIGRATION_62_63 = object : Migration(62, 63) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE `video_process_runs` ADD COLUMN `classroomKnowledgeTreeJson` TEXT NOT NULL DEFAULT ''")
+                database.execSQL("ALTER TABLE `video_process_runs` ADD COLUMN `classroomKnowledgeFrameRefsJson` TEXT NOT NULL DEFAULT ''")
+                database.execSQL("ALTER TABLE `video_process_runs` ADD COLUMN `classroomKnowledgeTreeStatus` TEXT NOT NULL DEFAULT ''")
+                database.execSQL("ALTER TABLE `video_process_runs` ADD COLUMN `classroomKnowledgeTreeUpdatedAt` INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        private val MIGRATION_63_64 = object : Migration(63, 64) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `classroom_note_followups` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `runId` INTEGER NOT NULL,
+                        `question` TEXT NOT NULL,
+                        `answer` TEXT NOT NULL,
+                        `status` TEXT NOT NULL,
+                        `contextStage` TEXT NOT NULL,
+                        `sourceRefsJson` TEXT NOT NULL,
+                        `conversationContextIdsJson` TEXT NOT NULL,
+                        `rawResponse` TEXT NOT NULL,
+                        `errorMessage` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        FOREIGN KEY(`runId`) REFERENCES `video_process_runs`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_classroom_note_followups_runId` ON `classroom_note_followups` (`runId`)"
+                )
+            }
+        }
+
+        private val MIGRATION_64_65 = object : Migration(64, 65) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `fitness_user_profiles` (
+                        `profileId` TEXT NOT NULL,
+                        `goalType` TEXT NOT NULL,
+                        `previousAttempt` TEXT NOT NULL,
+                        `targetPartsJson` TEXT NOT NULL,
+                        `targetWeightKg` REAL,
+                        `gender` TEXT NOT NULL,
+                        `age` INTEGER NOT NULL,
+                        `heightCm` INTEGER NOT NULL,
+                        `currentWeightKg` REAL NOT NULL,
+                        `currentBodyType` TEXT NOT NULL,
+                        `targetBodyType` TEXT NOT NULL,
+                        `injuryPartsJson` TEXT NOT NULL,
+                        `sedentaryLevel` TEXT NOT NULL,
+                        `sleepQuality` TEXT NOT NULL,
+                        `dietHabitsJson` TEXT NOT NULL,
+                        `rewardPreference` TEXT NOT NULL,
+                        `exerciseFrequency` TEXT NOT NULL,
+                        `preferredPlacesJson` TEXT NOT NULL,
+                        `gymVisitsPerWeek` INTEGER NOT NULL,
+                        `equipmentKnowledge` TEXT NOT NULL,
+                        `plankSeconds` INTEGER NOT NULL,
+                        `stairFeeling` TEXT NOT NULL,
+                        `onboardingStep` INTEGER NOT NULL,
+                        `isComplete` INTEGER NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`profileId`)
+                    )
+                    """.trimIndent()
+                )
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `fitness_media_assets` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `profileId` TEXT NOT NULL,
+                        `assetType` TEXT NOT NULL,
+                        `localPath` TEXT NOT NULL,
+                        `mimeType` TEXT NOT NULL,
+                        `durationMs` INTEGER NOT NULL,
+                        `width` INTEGER NOT NULL,
+                        `height` INTEGER NOT NULL,
+                        `notes` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_media_assets_profileId` ON `fitness_media_assets` (`profileId`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_media_assets_assetType` ON `fitness_media_assets` (`assetType`)")
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `fitness_strategy_goals` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `profileId` TEXT NOT NULL,
+                        `title` TEXT NOT NULL,
+                        `phaseLabel` TEXT NOT NULL,
+                        `startDateEpochDay` INTEGER NOT NULL,
+                        `endDateEpochDay` INTEGER NOT NULL,
+                        `summary` TEXT NOT NULL,
+                        `milestonesJson` TEXT NOT NULL,
+                        `status` TEXT NOT NULL,
+                        `rawJson` TEXT NOT NULL,
+                        `errorMessage` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_strategy_goals_profileId` ON `fitness_strategy_goals` (`profileId`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_strategy_goals_status` ON `fitness_strategy_goals` (`status`)")
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `fitness_workout_plans` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `profileId` TEXT NOT NULL,
+                        `title` TEXT NOT NULL,
+                        `objective` TEXT NOT NULL,
+                        `plannedDateEpochDay` INTEGER NOT NULL,
+                        `estimatedMinutes` INTEGER NOT NULL,
+                        `intensityLabel` TEXT NOT NULL,
+                        `warmup` TEXT NOT NULL,
+                        `cooldown` TEXT NOT NULL,
+                        `coachNotes` TEXT NOT NULL,
+                        `status` TEXT NOT NULL,
+                        `generationStatus` TEXT NOT NULL,
+                        `rawJson` TEXT NOT NULL,
+                        `errorMessage` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_workout_plans_profileId` ON `fitness_workout_plans` (`profileId`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_workout_plans_status` ON `fitness_workout_plans` (`status`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_workout_plans_plannedDateEpochDay` ON `fitness_workout_plans` (`plannedDateEpochDay`)")
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `fitness_workout_exercises` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `planId` INTEGER NOT NULL,
+                        `sortOrder` INTEGER NOT NULL,
+                        `category` TEXT NOT NULL,
+                        `equipment` TEXT NOT NULL,
+                        `name` TEXT NOT NULL,
+                        `sets` INTEGER NOT NULL,
+                        `reps` TEXT NOT NULL,
+                        `durationSeconds` INTEGER NOT NULL,
+                        `restSeconds` INTEGER NOT NULL,
+                        `intensity` TEXT NOT NULL,
+                        `notes` TEXT NOT NULL,
+                        FOREIGN KEY(`planId`) REFERENCES `fitness_workout_plans`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_workout_exercises_planId` ON `fitness_workout_exercises` (`planId`)")
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `fitness_workout_logs` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `profileId` TEXT NOT NULL,
+                        `planId` INTEGER NOT NULL,
+                        `completionLevel` TEXT NOT NULL,
+                        `fatigueLevel` TEXT NOT NULL,
+                        `painSignal` TEXT NOT NULL,
+                        `nextIntensityPreference` TEXT NOT NULL,
+                        `noteOption` TEXT NOT NULL,
+                        `completedAt` INTEGER NOT NULL,
+                        FOREIGN KEY(`planId`) REFERENCES `fitness_workout_plans`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_workout_logs_profileId` ON `fitness_workout_logs` (`profileId`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_workout_logs_planId` ON `fitness_workout_logs` (`planId`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_workout_logs_completedAt` ON `fitness_workout_logs` (`completedAt`)")
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `fitness_agent_runs` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `profileId` TEXT NOT NULL,
+                        `agentType` TEXT NOT NULL,
+                        `status` TEXT NOT NULL,
+                        `promptSummary` TEXT NOT NULL,
+                        `rawResponse` TEXT NOT NULL,
+                        `parsedJson` TEXT NOT NULL,
+                        `errorMessage` TEXT NOT NULL,
+                        `durationMs` INTEGER NOT NULL,
+                        `createdAt` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_agent_runs_profileId` ON `fitness_agent_runs` (`profileId`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_agent_runs_agentType` ON `fitness_agent_runs` (`agentType`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_agent_runs_status` ON `fitness_agent_runs` (`status`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_agent_runs_createdAt` ON `fitness_agent_runs` (`createdAt`)")
+            }
+        }
+
+        private val MIGRATION_65_66 = object : Migration(65, 66) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `fitness_strategy_specs` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `profileId` TEXT NOT NULL,
+                        `strategyVersion` TEXT NOT NULL,
+                        `status` TEXT NOT NULL,
+                        `isActive` INTEGER NOT NULL,
+                        `goalsJson` TEXT NOT NULL,
+                        `currentPhaseJson` TEXT NOT NULL,
+                        `weeklyBudgetJson` TEXT NOT NULL,
+                        `progressionRulesJson` TEXT NOT NULL,
+                        `autoregulationRulesJson` TEXT NOT NULL,
+                        `hardConstraintsJson` TEXT NOT NULL,
+                        `replanTriggersJson` TEXT NOT NULL,
+                        `rawJson` TEXT NOT NULL,
+                        `errorMessage` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_strategy_specs_profileId` ON `fitness_strategy_specs` (`profileId`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_strategy_specs_strategyVersion` ON `fitness_strategy_specs` (`strategyVersion`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_strategy_specs_status` ON `fitness_strategy_specs` (`status`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_strategy_specs_isActive` ON `fitness_strategy_specs` (`isActive`)")
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `fitness_weekly_ledgers` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `profileId` TEXT NOT NULL,
+                        `strategyVersion` TEXT NOT NULL,
+                        `weekStartEpochDay` INTEGER NOT NULL,
+                        `weekIndex` INTEGER NOT NULL,
+                        `weeklyBudgetJson` TEXT NOT NULL,
+                        `actualsJson` TEXT NOT NULL,
+                        `remainingBudgetJson` TEXT NOT NULL,
+                        `readinessTrendJson` TEXT NOT NULL,
+                        `painTrendJson` TEXT NOT NULL,
+                        `replanRequired` INTEGER NOT NULL,
+                        `replanReason` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_weekly_ledgers_profileId` ON `fitness_weekly_ledgers` (`profileId`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_weekly_ledgers_strategyVersion` ON `fitness_weekly_ledgers` (`strategyVersion`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_weekly_ledgers_weekStartEpochDay` ON `fitness_weekly_ledgers` (`weekStartEpochDay`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_weekly_ledgers_replanRequired` ON `fitness_weekly_ledgers` (`replanRequired`)")
+                database.execSQL("ALTER TABLE `fitness_workout_plans` ADD COLUMN `sessionId` TEXT NOT NULL DEFAULT ''")
+                database.execSQL("ALTER TABLE `fitness_workout_plans` ADD COLUMN `strategyVersion` TEXT NOT NULL DEFAULT ''")
+                database.execSQL("ALTER TABLE `fitness_workout_plans` ADD COLUMN `dailyContextJson` TEXT NOT NULL DEFAULT '{}'")
+                database.execSQL("ALTER TABLE `fitness_workout_plans` ADD COLUMN `sessionPlanJson` TEXT NOT NULL DEFAULT '{}'")
+                database.execSQL("ALTER TABLE `fitness_workout_plans` ADD COLUMN `expectedBudgetUsageJson` TEXT NOT NULL DEFAULT '{}'")
+                database.execSQL("ALTER TABLE `fitness_workout_plans` ADD COLUMN `adjustmentsJson` TEXT NOT NULL DEFAULT '[]'")
+                database.execSQL("ALTER TABLE `fitness_workout_plans` ADD COLUMN `stopRulesJson` TEXT NOT NULL DEFAULT '[]'")
+                database.execSQL("ALTER TABLE `fitness_workout_exercises` ADD COLUMN `movementPattern` TEXT NOT NULL DEFAULT ''")
+                database.execSQL("ALTER TABLE `fitness_workout_exercises` ADD COLUMN `targetMusclesJson` TEXT NOT NULL DEFAULT '[]'")
+                database.execSQL("ALTER TABLE `fitness_workout_exercises` ADD COLUMN `warmupSetsJson` TEXT NOT NULL DEFAULT '[]'")
+                database.execSQL("ALTER TABLE `fitness_workout_exercises` ADD COLUMN `repRangeMin` INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE `fitness_workout_exercises` ADD COLUMN `repRangeMax` INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE `fitness_workout_exercises` ADD COLUMN `targetRir` REAL NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE `fitness_workout_exercises` ADD COLUMN `restSecondsMin` INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE `fitness_workout_exercises` ADD COLUMN `restSecondsMax` INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE `fitness_workout_exercises` ADD COLUMN `tempo` TEXT NOT NULL DEFAULT ''")
+                database.execSQL("ALTER TABLE `fitness_workout_exercises` ADD COLUMN `loadSelectionRule` TEXT NOT NULL DEFAULT ''")
+                database.execSQL("ALTER TABLE `fitness_workout_exercises` ADD COLUMN `progressionRule` TEXT NOT NULL DEFAULT ''")
+                database.execSQL("ALTER TABLE `fitness_workout_exercises` ADD COLUMN `substitutionsJson` TEXT NOT NULL DEFAULT '[]'")
+                database.execSQL("ALTER TABLE `fitness_workout_exercises` ADD COLUMN `stopCondition` TEXT NOT NULL DEFAULT ''")
+                database.execSQL("ALTER TABLE `fitness_workout_exercises` ADD COLUMN `priority` TEXT NOT NULL DEFAULT ''")
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `fitness_session_results` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `profileId` TEXT NOT NULL,
+                        `planId` INTEGER NOT NULL,
+                        `sessionId` TEXT NOT NULL,
+                        `strategyVersion` TEXT NOT NULL,
+                        `completionRate` REAL NOT NULL,
+                        `actualDurationMin` INTEGER NOT NULL,
+                        `sessionRpe` REAL NOT NULL,
+                        `painEventsJson` TEXT NOT NULL,
+                        `unexpectedFatigue` INTEGER NOT NULL,
+                        `userFeedback` TEXT NOT NULL,
+                        `postSessionReadiness` INTEGER NOT NULL,
+                        `rawJson` TEXT NOT NULL,
+                        `completedAt` INTEGER NOT NULL,
+                        FOREIGN KEY(`planId`) REFERENCES `fitness_workout_plans`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_session_results_profileId` ON `fitness_session_results` (`profileId`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_session_results_planId` ON `fitness_session_results` (`planId`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_session_results_sessionId` ON `fitness_session_results` (`sessionId`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_session_results_completedAt` ON `fitness_session_results` (`completedAt`)")
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `fitness_exercise_results` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `sessionResultId` INTEGER NOT NULL,
+                        `exerciseId` INTEGER NOT NULL,
+                        `actualLoad` TEXT NOT NULL,
+                        `actualSets` INTEGER NOT NULL,
+                        `actualReps` TEXT NOT NULL,
+                        `actualRpe` REAL NOT NULL,
+                        `actualRir` REAL NOT NULL,
+                        `completionStatus` TEXT NOT NULL,
+                        `painScore` INTEGER NOT NULL,
+                        `substituted` INTEGER NOT NULL,
+                        `unfinishedReason` TEXT NOT NULL,
+                        FOREIGN KEY(`sessionResultId`) REFERENCES `fitness_session_results`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE,
+                        FOREIGN KEY(`exerciseId`) REFERENCES `fitness_workout_exercises`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_exercise_results_sessionResultId` ON `fitness_exercise_results` (`sessionResultId`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_exercise_results_exerciseId` ON `fitness_exercise_results` (`exerciseId`)")
+            }
+        }
+
+        private val MIGRATION_66_67 = object : Migration(66, 67) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `fitness_realtime_feedback_events` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `profileId` TEXT NOT NULL,
+                        `planId` INTEGER NOT NULL,
+                        `exerciseId` INTEGER NOT NULL,
+                        `sessionId` TEXT NOT NULL,
+                        `exerciseIntervalId` TEXT NOT NULL,
+                        `segmentId` TEXT NOT NULL,
+                        `observerId` TEXT NOT NULL,
+                        `eventType` TEXT NOT NULL,
+                        `status` TEXT NOT NULL,
+                        `segmentStartElapsedMs` INTEGER NOT NULL,
+                        `segmentEndElapsedMs` INTEGER NOT NULL,
+                        `analysisFinishedElapsedMs` INTEGER NOT NULL,
+                        `rawObserverJson` TEXT NOT NULL,
+                        `rawCoachJson` TEXT NOT NULL,
+                        `finalFeedback` TEXT NOT NULL,
+                        `discardReason` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_realtime_feedback_events_profileId` ON `fitness_realtime_feedback_events` (`profileId`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_realtime_feedback_events_planId` ON `fitness_realtime_feedback_events` (`planId`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_realtime_feedback_events_exerciseId` ON `fitness_realtime_feedback_events` (`exerciseId`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_realtime_feedback_events_sessionId` ON `fitness_realtime_feedback_events` (`sessionId`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_realtime_feedback_events_exerciseIntervalId` ON `fitness_realtime_feedback_events` (`exerciseIntervalId`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_realtime_feedback_events_segmentId` ON `fitness_realtime_feedback_events` (`segmentId`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_realtime_feedback_events_eventType` ON `fitness_realtime_feedback_events` (`eventType`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_realtime_feedback_events_createdAt` ON `fitness_realtime_feedback_events` (`createdAt`)")
+            }
+        }
+
+        private val MIGRATION_67_68 = object : Migration(67, 68) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE `fitness_realtime_feedback_events` ADD COLUMN `knowledgePackId` TEXT NOT NULL DEFAULT ''")
+                database.execSQL("ALTER TABLE `fitness_realtime_feedback_events` ADD COLUMN `knowledgePackTag` TEXT NOT NULL DEFAULT ''")
+                database.execSQL("ALTER TABLE `fitness_realtime_feedback_events` ADD COLUMN `exerciseName` TEXT NOT NULL DEFAULT ''")
+                database.execSQL("ALTER TABLE `fitness_realtime_feedback_events` ADD COLUMN `exerciseEquipment` TEXT NOT NULL DEFAULT ''")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_realtime_feedback_events_knowledgePackId` ON `fitness_realtime_feedback_events` (`knowledgePackId`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_realtime_feedback_events_knowledgePackTag` ON `fitness_realtime_feedback_events` (`knowledgePackTag`)")
+            }
+        }
+
+        private val MIGRATION_68_69 = object : Migration(68, 69) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `fitness_rep_events` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `profileId` TEXT NOT NULL,
+                        `planId` INTEGER NOT NULL,
+                        `exerciseId` INTEGER NOT NULL,
+                        `sessionId` TEXT NOT NULL,
+                        `exerciseIntervalId` TEXT NOT NULL,
+                        `repIndex` INTEGER NOT NULL,
+                        `startElapsedMs` INTEGER NOT NULL,
+                        `endElapsedMs` INTEGER NOT NULL,
+                        `durationMs` INTEGER NOT NULL,
+                        `activeLandmarksJson` TEXT NOT NULL,
+                        `dominantAxis` TEXT NOT NULL,
+                        `rangeScore` REAL NOT NULL,
+                        `smoothnessScore` REAL NOT NULL,
+                        `visibilityScore` REAL NOT NULL,
+                        `symmetryScore` REAL NOT NULL,
+                        `confidence` REAL NOT NULL,
+                        `qualityLabel` TEXT NOT NULL,
+                        `rawSignalsJson` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_rep_events_profileId` ON `fitness_rep_events` (`profileId`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_rep_events_planId` ON `fitness_rep_events` (`planId`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_rep_events_exerciseId` ON `fitness_rep_events` (`exerciseId`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_rep_events_sessionId` ON `fitness_rep_events` (`sessionId`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_rep_events_exerciseIntervalId` ON `fitness_rep_events` (`exerciseIntervalId`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_rep_events_createdAt` ON `fitness_rep_events` (`createdAt`)")
+            }
+        }
+
+        private val MIGRATION_69_70 = object : Migration(69, 70) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `fitness_exercises` (
+                        `id` TEXT NOT NULL,
+                        `name` TEXT NOT NULL,
+                        `displayNameZh` TEXT NOT NULL,
+                        `category` TEXT NOT NULL,
+                        `body_part` TEXT NOT NULL,
+                        `equipment` TEXT NOT NULL,
+                        `muscle_group` TEXT NOT NULL,
+                        `target` TEXT NOT NULL,
+                        `media_id` TEXT NOT NULL,
+                        `image` TEXT NOT NULL,
+                        `gif_url` TEXT NOT NULL,
+                        `attribution` TEXT NOT NULL,
+                        `created_at` TEXT NOT NULL,
+                        `searchText` TEXT NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_exercises_category` ON `fitness_exercises` (`category`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_exercises_body_part` ON `fitness_exercises` (`body_part`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_exercises_equipment` ON `fitness_exercises` (`equipment`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_exercises_target` ON `fitness_exercises` (`target`)")
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `fitness_exercise_instructions` (
+                        `exerciseId` TEXT NOT NULL,
+                        `language` TEXT NOT NULL,
+                        `fullText` TEXT NOT NULL,
+                        PRIMARY KEY(`exerciseId`, `language`)
+                    )
+                    """.trimIndent()
+                )
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_exercise_instructions_exerciseId` ON `fitness_exercise_instructions` (`exerciseId`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_exercise_instructions_language` ON `fitness_exercise_instructions` (`language`)")
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `fitness_exercise_instruction_steps` (
+                        `exerciseId` TEXT NOT NULL,
+                        `language` TEXT NOT NULL,
+                        `stepIndex` INTEGER NOT NULL,
+                        `text` TEXT NOT NULL,
+                        PRIMARY KEY(`exerciseId`, `language`, `stepIndex`)
+                    )
+                    """.trimIndent()
+                )
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_exercise_instruction_steps_exerciseId` ON `fitness_exercise_instruction_steps` (`exerciseId`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_exercise_instruction_steps_language` ON `fitness_exercise_instruction_steps` (`language`)")
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `fitness_exercise_secondary_muscles` (
+                        `exerciseId` TEXT NOT NULL,
+                        `muscle` TEXT NOT NULL,
+                        PRIMARY KEY(`exerciseId`, `muscle`)
+                    )
+                    """.trimIndent()
+                )
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_exercise_secondary_muscles_exerciseId` ON `fitness_exercise_secondary_muscles` (`exerciseId`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_fitness_exercise_secondary_muscles_muscle` ON `fitness_exercise_secondary_muscles` (`muscle`)")
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `fitness_exercise_library_meta` (
+                        `datasetId` TEXT NOT NULL,
+                        `sourceHash` TEXT NOT NULL,
+                        `exerciseCount` INTEGER NOT NULL,
+                        `importedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`datasetId`)
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         @Volatile
         private var instance: AppDatabase? = null
 
@@ -1278,7 +1903,9 @@ abstract class AppDatabase : RoomDatabase() {
             MIGRATION_43_44, MIGRATION_44_45, MIGRATION_45_46, MIGRATION_46_47,
             MIGRATION_47_48, MIGRATION_48_49, MIGRATION_49_50, MIGRATION_50_51,
             MIGRATION_51_52, MIGRATION_52_53, MIGRATION_53_54, MIGRATION_54_55, MIGRATION_55_56,
-            MIGRATION_56_57
+            MIGRATION_56_57, MIGRATION_57_58, MIGRATION_58_59, MIGRATION_59_60, MIGRATION_60_61,
+            MIGRATION_61_62, MIGRATION_62_63, MIGRATION_63_64, MIGRATION_64_65, MIGRATION_65_66,
+            MIGRATION_66_67, MIGRATION_67_68, MIGRATION_68_69, MIGRATION_69_70
         )
     }
 }

@@ -17,6 +17,9 @@ interface VideoProcessRunDao {
     @Query("SELECT * FROM video_process_runs ORDER BY updatedAt DESC LIMIT 20")
     fun observeRecentRuns(): Flow<List<VideoProcessRun>>
 
+    @Query("SELECT * FROM video_process_runs WHERE recordingScenario = :recordingScenario ORDER BY updatedAt DESC LIMIT :limit")
+    fun observeRecentRunsForScenario(recordingScenario: String, limit: Int): Flow<List<VideoProcessRun>>
+
     @Query("SELECT * FROM video_process_runs WHERE id = :id")
     fun observeRunById(id: Long): Flow<VideoProcessRun?>
 

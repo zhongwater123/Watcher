@@ -21,7 +21,8 @@ internal class VideoReportRefiner(
     private val apiService: DoubaoApiService,
     private val videoModel: String,
     private val planningModel: String,
-    private val apiKey: String
+    private val apiKey: String,
+    private val traceLogger: VideoAiTraceLogger
 ) {
 
     /**
@@ -33,8 +34,20 @@ internal class VideoReportRefiner(
         videoFileId: String,
         task: VideoProcessTaskDraft,
         chunkIndex: Int,
-        chunkCount: Int
+        chunkCount: Int,
+        traceId: String,
+        runId: Long
     ): String {
+        val context = VideoAiTraceContext(
+            traceId = traceId,
+            runId = runId,
+            taskId = task.taskId,
+            node = "VideoReportRefiner",
+            chunkIndex = chunkIndex,
+            model = videoModel,
+            requestKind = "video_refinement"
+        )
+        val startedAt = System.currentTimeMillis()
         val prompt = buildString {
             appendLine("你是专业分析助手。以下是基于音频大纲和分片事实生成的初版报告。")
             appendLine("现在请观看对应视频片段，对报告执行：补充视觉细节、修正矛盾、添加时间戳引用、保持结构连贯。")
@@ -54,11 +67,47 @@ internal class VideoReportRefiner(
             model = videoModel,
             input = listOf(VideoMessage(role = "user", content = contentItems))
         )
-        return retryRemoteCall {
-            apiService.analyzeVideo(
-                authorization = bearerToken(),
-                request = request
-            ).requireOutputText("report video refinement")
+        return try {
+            traceLogger.beginNode(
+                context,
+                aiTracePayload(
+                    "videoFileId" to videoFileId,
+                    "chunkIndex" to chunkIndex,
+                    "chunkCount" to chunkCount,
+                    "currentReportLength" to currentReport.length
+                )
+            )
+            traceLogger.logPrompt(context, basePrompt = prompt, renderedPrompt = prompt)
+            traceLogger.logRequest(
+                context,
+                aiTracePayload(
+                    "model" to request.model,
+                    "videoFileId" to videoFileId,
+                    "promptLength" to prompt.length
+                )
+            )
+            val refinedMarkdown = retryRemoteCall {
+                apiService.analyzeVideo(
+                    authorization = bearerToken(),
+                    request = request
+                ).requireOutputText("report video refinement")
+            }
+            val durationMs = System.currentTimeMillis() - startedAt
+            traceLogger.logResponse(context, refinedMarkdown, durationMs)
+            traceLogger.logParsed(
+                context = context,
+                parsedSummary = refinedMarkdown.lines().firstOrNull { it.isNotBlank() }.orEmpty(),
+                parsedJson = aiTracePayload(
+                    "parseStatus" to "success",
+                    "markdownLength" to refinedMarkdown.length
+                ),
+                parseStatus = "success"
+            )
+            traceLogger.finishNode(context, durationMs)
+            refinedMarkdown
+        } catch (error: Throwable) {
+            traceLogger.logError(context, error, System.currentTimeMillis() - startedAt)
+            throw error
         }
     }
 

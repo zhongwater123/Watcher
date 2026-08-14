@@ -40,6 +40,45 @@ class GatewayContractTest {
     }
 
     @Test
+    fun ntfyRelayConfigDefaultsAreFailClosed() {
+        val config = NtfyRelayConfig()
+
+        assertEquals("", config.serverUrl)
+        assertEquals("", config.topic)
+        assertNull(config.authToken)
+        assertFalse(config.enabled)
+    }
+
+    @Test
+    fun ntfyRelayServerUrlAllowsExplicitHttpOrHttpsWhenConfigured() {
+        assertNull(validateNtfyRelayServerUrl(""))
+        assertNull(validateNtfyRelayServerUrl("http://ntfy.example.com"))
+        assertNull(validateNtfyRelayServerUrl("https://ntfy.example.com"))
+        assertEquals(
+            "ntfy server URL must use http:// or https://.",
+            validateNtfyRelayServerUrl("ftp://ntfy.example.com")
+        )
+    }
+
+    @Test
+    fun corsPolicyIsClosedByDefault() {
+        assertNull(resolveAllowedCorsOrigin(null, emptySet()))
+        assertNull(resolveAllowedCorsOrigin("https://desktop.example", emptySet()))
+    }
+
+    @Test
+    fun corsPolicyReturnsOnlyAllowedOrigin() {
+        val allowed = setOf("https://desktop.example")
+
+        assertEquals(
+            "https://desktop.example",
+            resolveAllowedCorsOrigin("https://desktop.example", allowed)
+        )
+        assertNull(resolveAllowedCorsOrigin("https://evil.example", allowed))
+        assertNull(resolveAllowedCorsOrigin("*", allowed))
+    }
+
+    @Test
     fun capabilitiesMarksCouncilAsNotImplementedAndDocumentsEventPolling() {
         val capabilities = GatewayRoutes.capabilities("http://127.0.0.1:8080")
 

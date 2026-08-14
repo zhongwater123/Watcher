@@ -66,6 +66,7 @@ fun VideoStreamSettingsDialog(
     onScanProvisionWifi: () -> Unit,
     onSubmitProvisionWifi: (String, String) -> Unit,
     onClearProvisionedWifi: () -> Unit,
+    onPreviewFrameOrientation: (Int, Boolean) -> Unit = { _, _ -> },
     onSave: (VideoStreamSettings) -> Unit
 ) {
     var ipAddress by remember { mutableStateOf(settings?.ipAddress ?: VideoStreamSettings.DEFAULT_DEVICE_IP) }
@@ -97,6 +98,12 @@ fun VideoStreamSettingsDialog(
     }
     var wifiSsid by remember { mutableStateOf(settings?.preferredWifiSsid.orEmpty()) }
     var wifiPassword by remember { mutableStateOf("") }
+    var rotationDegrees by remember {
+        mutableStateOf(VideoStreamSettings.normalizeRotationDegrees(settings?.rotationDegrees ?: 0))
+    }
+    var mirrorHorizontally by remember {
+        mutableStateOf(settings?.mirrorHorizontally ?: false)
+    }
     var advancedExpanded by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(
         settings?.ipAddress,
@@ -113,7 +120,9 @@ fun VideoStreamSettingsDialog(
         settings?.notificationCooldownSeconds,
         settings?.videoAnalysisStreamingEnabled,
         settings?.deviceProfile,
-        settings?.preferredWifiSsid
+        settings?.preferredWifiSsid,
+        settings?.rotationDegrees,
+        settings?.mirrorHorizontally
     ) {
         settings?.let {
             ipAddress = it.ipAddress
@@ -131,6 +140,8 @@ fun VideoStreamSettingsDialog(
             videoAnalysisStreamingEnabled = it.videoAnalysisStreamingEnabled
             deviceProfile = it.deviceProfile
             wifiSsid = it.preferredWifiSsid
+            rotationDegrees = VideoStreamSettings.normalizeRotationDegrees(it.rotationDegrees)
+            mirrorHorizontally = it.mirrorHorizontally
         }
     }
 
@@ -159,6 +170,11 @@ fun VideoStreamSettingsDialog(
     val wifiSsidBytes = provisionWifiSsidUtf8Length(wifiSsid)
     val exceedsLegacySsidLimit = normalizedWifiSsid.isNotBlank() && exceedsLegacyProvisionWifiSsidLimit(wifiSsid)
     val wifiPasswordError = validateProvisionWifiPassword(wifiPassword)
+    fun updateFrameOrientation(rotation: Int, mirrored: Boolean) {
+        rotationDegrees = VideoStreamSettings.normalizeRotationDegrees(rotation)
+        mirrorHorizontally = mirrored
+        onPreviewFrameOrientation(rotationDegrees, mirrorHorizontally)
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -476,6 +492,45 @@ fun VideoStreamSettingsDialog(
 
                 AnimatedVisibility(visible = advancedExpanded) {
                     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                        SettingsGroup(title = "画面方向") {
+                            Text(
+                                text = "方向：${rotationDegrees}°，镜像：${if (mirrorHorizontally) "开" else "关"}",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                FilledTonalButton(
+                                    onClick = { updateFrameOrientation(rotationDegrees - 90, mirrorHorizontally) },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(18.dp)
+                                ) {
+                                    Text("左转 90°")
+                                }
+                                FilledTonalButton(
+                                    onClick = { updateFrameOrientation(rotationDegrees + 90, mirrorHorizontally) },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(18.dp)
+                                ) {
+                                    Text("右转 90°")
+                                }
+                            }
+                            FilledTonalButton(
+                                onClick = { updateFrameOrientation(rotationDegrees, !mirrorHorizontally) },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(18.dp)
+                            ) {
+                                Text(if (mirrorHorizontally) "关闭水平镜像" else "开启水平镜像")
+                            }
+                            Text(
+                                text = "只调整 App 内预览、截图、监控和视频分析使用的画面方向，不会向设备下发旋转参数。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
                         SettingsGroup(title = "画质") {
                             Text(
                                 text = stringResource(R.string.settings_stream_resolution),
@@ -624,7 +679,9 @@ fun VideoStreamSettingsDialog(
                             notificationCooldownSeconds = notificationCooldownSeconds.toIntOrNull() ?: 20,
                             videoAnalysisStreamingEnabled = videoAnalysisStreamingEnabled,
                             deviceProfile = deviceProfile,
-                            preferredWifiSsid = wifiSsid
+                            preferredWifiSsid = wifiSsid,
+                            rotationDegrees = rotationDegrees,
+                            mirrorHorizontally = mirrorHorizontally
                         )
                     )
                 },

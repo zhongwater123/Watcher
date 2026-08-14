@@ -2,6 +2,7 @@ package com.example.watcher.ui.viewmodel
 
 import android.content.Context
 import android.graphics.Bitmap
+import com.example.watcher.WatcherForegroundService
 import com.example.watcher.agentframework.service.AgentFrameworkService
 import com.example.watcher.data.gateway.GatewayEvent
 import com.example.watcher.data.gateway.GatewayAutomationManager
@@ -15,6 +16,14 @@ import com.example.watcher.data.gateway.GatewayServiceAnnouncer
 import com.example.watcher.data.gateway.GatewayStateHolder
 import com.example.watcher.data.gateway.GatewayTaskManager
 import com.example.watcher.data.gateway.GatewayTaskStatus
+import com.example.watcher.data.gateway.NtfyConnectionState
+import com.example.watcher.data.gateway.NtfyDebugEntry
+import com.example.watcher.data.gateway.NtfyDebugStats
+import com.example.watcher.data.gateway.SendStatus
+import com.example.watcher.data.gateway.NtfyRelayClient
+import com.example.watcher.data.gateway.NtfyRelayConfig
+import com.example.watcher.data.gateway.NtfyRelayPayload
+import com.example.watcher.data.gateway.validateNtfyRelayServerUrl
 import com.example.watcher.data.model.BaselineSource
 import com.example.watcher.data.model.IntentResult
 import com.example.watcher.data.model.MonitorMode
@@ -81,10 +90,19 @@ internal class GatewayDelegate(
     )
     override val running: StateFlow<Boolean> = _running.asStateFlow()
     override val status: StateFlow<GatewayRuntimeStatus> = _status.asStateFlow()
+    private val ntfyClient = NtfyRelayClient(scope, onConversationsChanged = ::persistConversations, onMessagesChanged = ::persistMessages)
+
     override val pairingRequests: StateFlow<List<GatewayPairingRequest>> = automationManager.pairingRequests
     override val pairingBindings: StateFlow<List<GatewayPairingRecord>> = automationManager.bindings
-    override val relayConversations: StateFlow<List<GatewayRelayConversation>> = automationManager.relayConversations
-    override val relayMessages: StateFlow<List<GatewayRelayMessage>> = automationManager.relayMessages
+    override val relayConversations: StateFlow<List<GatewayRelayConversation>> = ntfyClient.conversations
+    override val relayMessages: StateFlow<List<GatewayRelayMessage>> = ntfyClient.messages
+    override val ntfyConnectionState: StateFlow<NtfyConnectionState> = ntfyClient.connectionState
+    override val ntfyDebugStats: StateFlow<NtfyDebugStats> = ntfyClient.debugStats
+    override val ntfyDebugLog: StateFlow<List<NtfyDebugEntry>> = ntfyClient.debugLog
+    private val _relayError = MutableStateFlow<String?>(null)
+    override val relayError: StateFlow<String?> = _relayError.asStateFlow()
+    private val _phoneAvailable = MutableStateFlow(false)
+    override val phoneAvailable: StateFlow<Boolean> = _phoneAvailable.asStateFlow()
     override val apiKey: String get() = readOrCreateApiKey()
     override val port: Int get() = prefs.getInt("port", GatewayServer.DEFAULT_PORT)
 
@@ -96,6 +114,7 @@ internal class GatewayDelegate(
             }
         }
         reconcileAutomationMonitoring()
+        loadAndApplyNtfyConfig()
     }
 
     override fun toggle(enabled: Boolean) {
@@ -111,19 +130,31 @@ internal class GatewayDelegate(
     }
 
     override fun createLocalRelayConversation(agentBridgeId: String, title: String) {
-        automationManager.createLocalRelayConversation(agentBridgeId, title)
+        ntfyClient.createConversation(title)
     }
 
     override fun sendPhoneRelayMessage(conversationId: String, content: String) {
-        val conversation = automationManager.listRelayConversations()
-            .firstOrNull { it.id == conversationId }
-            ?: return
-        automationManager.appendRelayMessage(
-            agentBridgeId = conversation.agentBridgeId,
-            conversationId = conversationId,
-            author = GatewayAutomationManager.RELAY_AUTHOR_PHONE_USER,
-            content = content
-        )
+        scope.launch {
+            try {
+                ntfyClient.publish(
+                    NtfyRelayPayload(
+                        author = "phone_user",
+                        content = content,
+                        conversationId = conversationId,
+                        turnId = nextTurnId(conversationId)
+                    )
+                )
+            } catch (e: Exception) {
+                android.util.Log.w("GatewayDelegate", "ntfy publish failed: ${e.message}")
+            }
+        }
+    }
+
+    private fun nextTurnId(conversationId: String): Int {
+        val key = "turn_$conversationId"
+        val current = prefs.getInt(key, 0) + 1
+        prefs.edit().putInt(key, current).apply()
+        return current
     }
 
     override fun getLocalIpAddress(): String {
@@ -153,8 +184,239 @@ internal class GatewayDelegate(
         } catch (_: Exception) { "0.0.0.0" }
     }
 
+    override fun getNtfyConfig(): NtfyRelayConfig {
+        var topic = prefs.getString("ntfy_topic", null)
+        // Migrate: old topic without watcher- prefix is incompatible with new ACL
+        if (topic == null || !topic.startsWith("watcher-")) {
+            topic = generateAndStoreTopic()
+        }
+        return NtfyRelayConfig(
+            serverUrl = prefs.getString("ntfy_server_url", "")?.trim().orEmpty(),
+            topic = topic,
+            authToken = prefs.getString("ntfy_auth_token", null)?.trim()?.takeIf { it.isNotBlank() },
+            enabled = prefs.getBoolean("ntfy_enabled", false)
+        )
+    }
+
+    private fun generateAndStoreTopic(): String {
+        val hex = java.util.UUID.randomUUID().toString().replace("-", "").take(8)
+        val topic = "watcher-$hex"
+        prefs.edit().putString("ntfy_topic", topic).apply()
+        android.util.Log.d("GatewayNtfy", "Generated new device topic: $topic")
+        return topic
+    }
+
+    override fun setPhoneAvailable(available: Boolean) {
+        _phoneAvailable.value = available
+        prefs.edit().putBoolean("ntfy_phone_available", available).apply()
+        if (available) {
+            // Auto-enable: preserve user's server/topic, just ensure enabled=true
+            val config = getNtfyConfig()
+            val effectiveConfig = if (!config.enabled) {
+                config.copy(enabled = true).also { updateNtfyConfig(it) }
+            } else {
+                config
+            }
+            applyNtfyConfigIfValid(effectiveConfig, publishPresence = true)
+        } else {
+            ntfyClient.publishPresence(false)
+            ntfyClient.stopSubscription()
+            WatcherForegroundService.stop(appContext, WatcherForegroundService.REASON_NTFY_RELAY)
+        }
+    }
+
+    override fun handBackConversation(conversationId: String, summary: String) {
+        scope.launch {
+            try {
+                ntfyClient.publish(
+                    NtfyRelayPayload(
+                        type = "hand_back",
+                        author = "phone_user",
+                        content = summary,
+                        conversationId = conversationId,
+                        turnId = nextTurnId(conversationId)
+                    )
+                )
+            } catch (e: Exception) {
+                android.util.Log.w("GatewayDelegate", "ntfy hand_back failed: ${e.message}")
+                _relayError.value = "交回失败，请重试"
+            }
+        }
+    }
+
+    override fun deleteConversation(conversationId: String) {
+        ntfyClient.deleteConversation(conversationId)
+    }
+
+    override fun clearRelayError() {
+        _relayError.value = null
+    }
+
+    override fun updateNtfyConfig(config: NtfyRelayConfig) {
+        prefs.edit()
+            .putString("ntfy_server_url", config.serverUrl)
+            .putString("ntfy_topic", config.topic)
+            .putString("ntfy_auth_token", config.authToken)
+            .putBoolean("ntfy_enabled", config.enabled)
+            .apply()
+        applyNtfyConfigIfValid(config, publishPresence = false)
+    }
+
+    private fun loadAndApplyNtfyConfig() {
+        ntfyClient.onHandoffReceived = ::onHandoffNotification
+        restoreConversations()
+        restoreMessages()
+        val available = prefs.getBoolean("ntfy_phone_available", false)
+        _phoneAvailable.value = available
+        android.util.Log.d("GatewayNtfy", "loadAndApplyNtfyConfig: available=$available")
+        if (available) {
+            val config = getNtfyConfig()
+            val effectiveConfig = if (!config.enabled) config.copy(enabled = true) else config
+            android.util.Log.d("GatewayNtfy", "loadAndApplyNtfyConfig: applying ${effectiveConfig.serverUrl}/${effectiveConfig.topic} enabled=${effectiveConfig.enabled}")
+            applyNtfyConfigIfValid(effectiveConfig, publishPresence = true)
+        }
+    }
+
+    private fun applyNtfyConfigIfValid(config: NtfyRelayConfig, publishPresence: Boolean) {
+        val validationError = validateNtfyRelayServerUrl(config.serverUrl)
+        if (config.enabled && (config.serverUrl.isBlank() || validationError != null)) {
+            _relayError.value = validationError ?: "请先配置 HTTPS ntfy 服务器地址"
+            ntfyClient.stopSubscription()
+            WatcherForegroundService.stop(appContext, WatcherForegroundService.REASON_NTFY_RELAY)
+            return
+        }
+        ntfyClient.configure(config)
+        if (publishPresence) {
+            ntfyClient.publishPresence(true)
+            WatcherForegroundService.start(
+                appContext,
+                "ntfy 消息通道运行中",
+                WatcherForegroundService.REASON_NTFY_RELAY
+            )
+        }
+    }
+
+    private fun persistConversations(conversations: List<GatewayRelayConversation>) {
+        val json = org.json.JSONArray().apply {
+            conversations.take(50).forEach { conv ->
+                put(org.json.JSONObject().apply {
+                    put("id", conv.id)
+                    put("title", conv.title)
+                    put("summary", conv.summary)
+                    put("status", conv.status)
+                    put("createdAt", conv.createdAt)
+                    put("updatedAt", conv.updatedAt)
+                })
+            }
+        }
+        prefs.edit().putString("ntfy_conversations", json.toString()).apply()
+    }
+
+    private fun restoreConversations() {
+        val json = prefs.getString("ntfy_conversations", null) ?: return
+        try {
+            val arr = org.json.JSONArray(json)
+            val list = (0 until arr.length()).map { i ->
+                val obj = arr.getJSONObject(i)
+                GatewayRelayConversation(
+                    id = obj.getString("id"),
+                    agentBridgeId = "ntfy",
+                    agentBridgeName = "PC Agent",
+                    title = obj.optString("title", ""),
+                    summary = obj.optString("summary", ""),
+                    status = obj.optString("status", "active"),
+                    createdAt = obj.optLong("createdAt", System.currentTimeMillis()),
+                    updatedAt = obj.optLong("updatedAt", System.currentTimeMillis())
+                )
+            }
+            ntfyClient.restoreConversations(list)
+        } catch (e: Exception) {
+            android.util.Log.w("GatewayNtfy", "Failed to restore conversations: ${e.message}")
+        }
+    }
+
+    private fun persistMessages(messages: List<GatewayRelayMessage>) {
+        val json = org.json.JSONArray().apply {
+            messages.takeLast(200).forEach { msg ->
+                put(org.json.JSONObject().apply {
+                    put("id", msg.id)
+                    put("conversationId", msg.conversationId)
+                    put("author", msg.author)
+                    put("content", msg.content)
+                    put("createdAt", msg.createdAt)
+                    put("sendStatus", msg.sendStatus.name)
+                })
+            }
+        }
+        prefs.edit().putString("ntfy_messages", json.toString()).apply()
+    }
+
+    private fun restoreMessages() {
+        val json = prefs.getString("ntfy_messages", null) ?: return
+        try {
+            val arr = org.json.JSONArray(json)
+            val list = (0 until arr.length()).map { i ->
+                val obj = arr.getJSONObject(i)
+                GatewayRelayMessage(
+                    id = obj.getLong("id"),
+                    conversationId = obj.getString("conversationId"),
+                    author = obj.optString("author", ""),
+                    content = obj.optString("content", ""),
+                    createdAt = obj.optLong("createdAt", 0L),
+                    sendStatus = try { SendStatus.valueOf(obj.optString("sendStatus", "Confirmed")) } catch (_: Exception) { SendStatus.Confirmed }
+                )
+            }
+            ntfyClient.restoreMessages(list)
+        } catch (e: Exception) {
+            android.util.Log.w("GatewayNtfy", "Failed to restore messages: ${e.message}")
+        }
+    }
+
+    private fun onHandoffNotification(payload: NtfyRelayPayload) {
+        android.util.Log.d("GatewayNtfy", "onHandoffNotification: conv=${payload.conversationId} title=${payload.title}")
+        try {
+            val channelId = "relay_handoff"
+            val nm = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                val channel = android.app.NotificationChannel(
+                    channelId, "会话接续", android.app.NotificationManager.IMPORTANCE_HIGH
+                )
+                nm.createNotificationChannel(channel)
+            }
+            val intent = android.content.Intent(appContext, com.example.watcher.MultiDeviceActivity::class.java).apply {
+                flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP
+                putExtra("conversationId", payload.conversationId)
+            }
+            val pending = android.app.PendingIntent.getActivity(
+                appContext, payload.conversationId.hashCode(), intent,
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+            )
+            val bigText = buildString {
+                payload.summary?.let { appendLine(it) }
+                if (payload.content.isNotBlank() && payload.content != payload.summary) {
+                    appendLine()
+                    append(payload.content)
+                }
+            }.ifBlank { "点击查看对话上下文" }
+
+            val notification = androidx.core.app.NotificationCompat.Builder(appContext, channelId)
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setContentTitle(payload.title ?: "PC Agent 需要你接续")
+                .setContentText(payload.content.ifBlank { payload.summary ?: "点击查看对话上下文" })
+                .setStyle(androidx.core.app.NotificationCompat.BigTextStyle().bigText(bigText))
+                .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
+                .setAutoCancel(true)
+                .setContentIntent(pending)
+                .build()
+            nm.notify(payload.conversationId.hashCode(), notification)
+        } catch (e: Exception) {
+            android.util.Log.w("GatewayDelegate", "Failed to show handoff notification: ${e.message}")
+        }
+    }
+
     fun release() {
         stop()
+        ntfyClient.release()
         taskManager.release()
     }
 
@@ -400,6 +662,7 @@ internal class GatewayDelegate(
                         "result" to status.lastResult.name,
                         "summary" to status.lastSummary,
                         "reason" to status.lastReason,
+                        "remark" to status.lastRemark,
                         "confidence" to status.lastConfidence,
                         "totalChecks" to status.totalCheckCount,
                         "alerts" to status.alertCount,
@@ -417,7 +680,8 @@ internal class GatewayDelegate(
                 "warnings" to finalStatus.warningCount,
                 "normals" to finalStatus.normalCount,
                 "lastResult" to finalStatus.lastResult.name,
-                "lastSummary" to finalStatus.lastSummary
+                "lastSummary" to finalStatus.lastSummary,
+                "lastRemark" to finalStatus.lastRemark
             )
         }
 

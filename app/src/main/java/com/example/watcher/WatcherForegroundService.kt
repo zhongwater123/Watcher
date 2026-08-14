@@ -38,12 +38,20 @@ class WatcherForegroundService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
+                // Notification "停止" button: force-stop everything
+                activeReasons.clear()
                 stopSelf()
                 return START_NOT_STICKY
             }
         }
 
-        val message = intent?.getStringExtra(EXTRA_MESSAGE) ?: "Watcher 正在后台运行"
+        // Reason already tracked by companion start/stop — just show notification
+        val reason = intent?.getStringExtra(EXTRA_REASON)
+        if (reason != null) {
+            activeReasons.add(reason)
+        }
+
+        val message = intent?.getStringExtra(EXTRA_MESSAGE) ?: buildMessageFromReasons()
         val notification = buildNotification(message)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -65,8 +73,22 @@ class WatcherForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        activeReasons.clear()
         releaseWakeLock()
         super.onDestroy()
+    }
+
+    private fun buildMessageFromReasons(): String {
+        if (activeReasons.isEmpty()) return "Watcher 正在后台运行"
+        val labels = activeReasons.map { reason ->
+            when (reason) {
+                REASON_MONITOR -> "实时监控"
+                REASON_VIDEO -> "视频分析"
+                REASON_NTFY_RELAY -> "ntfy 消息通道"
+                else -> reason
+            }
+        }
+        return "${labels.joinToString(" · ")} 运行中"
     }
 
     private fun createNotificationChannel() {
@@ -132,11 +154,19 @@ class WatcherForegroundService : Service() {
         private const val CHANNEL_ID = "watcher_foreground_task"
         private const val NOTIFICATION_ID = 9001
         private const val EXTRA_MESSAGE = "message"
+        private const val EXTRA_REASON = "reason"
         private const val ACTION_STOP = "com.example.watcher.STOP_FOREGROUND"
 
-        fun start(context: Context, message: String = "Watcher 正在后台运行") {
+        const val REASON_MONITOR = "monitor"
+        const val REASON_VIDEO = "video"
+        const val REASON_NTFY_RELAY = "ntfy_relay"
+
+        private val activeReasons = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
+        fun start(context: Context, message: String = "Watcher 正在后台运行", reason: String? = null) {
             val intent = Intent(context, WatcherForegroundService::class.java).apply {
                 putExtra(EXTRA_MESSAGE, message)
+                reason?.let { putExtra(EXTRA_REASON, it) }
             }
             context.startForegroundService(intent)
         }
@@ -145,9 +175,21 @@ class WatcherForegroundService : Service() {
             start(context, message)
         }
 
-        fun stop(context: Context) {
-            val intent = Intent(context, WatcherForegroundService::class.java)
-            context.stopService(intent)
+        fun stop(context: Context, reason: String? = null) {
+            if (reason != null) {
+                activeReasons.remove(reason)
+                if (activeReasons.isEmpty()) {
+                    // No more reasons — stop the service directly
+                    context.stopService(Intent(context, WatcherForegroundService::class.java))
+                } else {
+                    // Still active for other reasons — just update notification
+                    start(context, reason = null)
+                }
+            } else {
+                // Force stop all
+                activeReasons.clear()
+                context.stopService(Intent(context, WatcherForegroundService::class.java))
+            }
         }
     }
 }

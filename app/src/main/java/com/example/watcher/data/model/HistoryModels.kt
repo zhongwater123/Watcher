@@ -137,17 +137,22 @@ data class VideoHistoryDetail(
     val audioAssets: List<VideoAudioAssetEntity> = emptyList(),
     val remoteFileBindings: List<VideoRemoteFileBindingEntity> = emptyList(),
     val events: List<TimelineEventEntity>,
-    val speechTranscripts: List<VideoSpeechTranscriptEntity> = emptyList()
+    val speechTranscripts: List<VideoSpeechTranscriptEntity> = emptyList(),
+    val totalSegmentCount: Int = segments.size,
+    val totalAudioAssetCount: Int = audioAssets.size,
+    val totalRemoteFileBindingCount: Int = remoteFileBindings.size,
+    val totalEventCount: Int = events.size,
+    val totalSpeechTranscriptCount: Int = speechTranscripts.size
 ) : HistoryRecordDetail {
     override val selection: HistoryRecordSelection =
         HistoryRecordSelection(HistoryRecordType.VideoAnalysis, run.id)
     override val title: String = run.taskTitle.ifBlank { "视频分析任务" }
     override val requirement: String = run.taskRequirement
-    override val statusLabel: String = videoRunStatusLabel(run.status)
+    override val statusLabel: String = historyVideoRunStatusLabel(run)
     override val summary: String = run.finalSummary.ifBlank { run.errorMessage ?: run.finalConclusion }
     override val startedAt: Long = run.recordingStartedAt ?: run.createdAt
     override val updatedAt: Long = run.updatedAt
-    override val canDelete: Boolean = run.status !in ACTIVE_VIDEO_RUN_STATUSES
+    override val canDelete: Boolean = run.status !in ACTIVE_VIDEO_RUN_STATUSES || isStalePostCaptureVideoRun(run)
     val mergedVideoPath: String? = run.mergedVideoPath
     val fullMediaPath: String? = run.fullMediaPath
     val previewPath: String? = run.fullMediaPath
@@ -159,17 +164,19 @@ data class MonitorHistoryDetail(
     val run: MonitorRun,
     val task: MonitorTask? = null,
     val events: List<MonitorEventEntity>,
-    val media: List<MonitorMediaEntity>
+    val media: List<MonitorMediaEntity>,
+    val totalEventCount: Int = events.size,
+    val totalMediaCount: Int = media.size
 ) : HistoryRecordDetail {
     override val selection: HistoryRecordSelection =
         HistoryRecordSelection(HistoryRecordType.LiveMonitor, run.id)
     override val title: String = run.taskTitle.ifBlank { "实时监控任务" }
     override val requirement: String = run.taskRequirement
-    override val statusLabel: String = monitorRunStatusLabel(run.status)
+    override val statusLabel: String = historyMonitorRunStatusLabel(run)
     override val summary: String = run.lastSummary.ifBlank { run.lastReason.ifBlank { "暂无摘要" } }
     override val startedAt: Long = run.startedAt
     override val updatedAt: Long = run.updatedAt
-    override val canDelete: Boolean = run.status == MonitorRunStatus.Completed
+    override val canDelete: Boolean = run.status == MonitorRunStatus.Completed || isStaleMonitorRun(run)
     val previewPath: String? = run.sessionVideoPath
         ?: run.baselineImagePath
         ?: events.firstNotNullOfOrNull { it.frameImagePath }
@@ -189,6 +196,65 @@ val ACTIVE_VIDEO_RUN_STATUSES = setOf(
     VideoRunStatus.Analyzing,
     VideoRunStatus.Summarizing
 )
+
+private val POST_CAPTURE_VIDEO_RUN_STATUSES = setOf(
+    VideoRunStatus.Uploading,
+    VideoRunStatus.Preprocessing,
+    VideoRunStatus.Analyzing,
+    VideoRunStatus.Summarizing
+)
+
+private const val STALE_POST_CAPTURE_CLEANUP_AFTER_MS = 30 * 60 * 1_000L
+private const val STALE_MONITOR_RUN_CLEANUP_AFTER_MS = 6 * 60 * 60 * 1_000L
+
+private val STALE_CLEANUP_MONITOR_RUN_STATUSES = setOf(
+    MonitorRunStatus.Running,
+    MonitorRunStatus.Paused
+)
+
+fun isStalePostCaptureVideoRun(
+    run: VideoProcessRun,
+    now: Long = System.currentTimeMillis()
+): Boolean {
+    if (run.status in POST_CAPTURE_VIDEO_RUN_STATUSES &&
+        run.recordingEndedAt != null &&
+        now - run.updatedAt >= STALE_POST_CAPTURE_CLEANUP_AFTER_MS
+    ) return true
+    // Also treat Recording runs as stale if no update for 30+ minutes
+    if (run.status == VideoRunStatus.Recording &&
+        now - run.updatedAt >= STALE_POST_CAPTURE_CLEANUP_AFTER_MS
+    ) return true
+    return false
+}
+
+fun historyVideoRunStatusLabel(run: VideoProcessRun): String {
+    val base = videoRunStatusLabel(run.status)
+    return if (isStalePostCaptureVideoRun(run)) {
+        "$base(疑似中断)"
+    } else {
+        base
+    }
+}
+
+fun isStaleMonitorRun(
+    run: MonitorRun,
+    now: Long = System.currentTimeMillis()
+): Boolean {
+    return run.status in STALE_CLEANUP_MONITOR_RUN_STATUSES &&
+        now - run.updatedAt >= STALE_MONITOR_RUN_CLEANUP_AFTER_MS
+}
+
+fun historyMonitorRunStatusLabel(
+    run: MonitorRun,
+    now: Long = System.currentTimeMillis()
+): String {
+    val base = monitorRunStatusLabel(run.status)
+    return if (isStaleMonitorRun(run, now)) {
+        if (run.status == MonitorRunStatus.Running) "疑似中断" else "$base(疑似中断)"
+    } else {
+        base
+    }
+}
 
 fun videoRunStatusLabel(status: VideoRunStatus): String {
     return when (status) {

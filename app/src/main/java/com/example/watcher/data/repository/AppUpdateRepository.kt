@@ -241,8 +241,8 @@ class AppUpdateRepository(
     }
 
     private companion object {
-        const val DOWNLOAD_PAGE_URL = "http://www.shokz-watcher.cn/app/"
-        const val METADATA_URL = "http://www.shokz-watcher.cn/app/latest.json"
+        const val DOWNLOAD_PAGE_URL = "https://www.shokz-watcher.cn/app/"
+        const val METADATA_URL = "https://www.shokz-watcher.cn/app/latest.json"
         const val PREFS_NAME = "watcher_app_updates"
         const val KEY_HIGHEST_TRUSTED_VERSION_CODE = "highest_trusted_version_code"
         const val KEY_HIGHEST_TRUSTED_PUBLISHED_AT = "highest_trusted_published_at"

@@ -92,17 +92,20 @@ object ModelOutputParser {
 
     fun parseMonitorDecision(rawText: String): MonitorDecision {
         val payload = tryParse<DetectionPayload>(rawText)
+        val root = parseJsonObject(rawText)
 
         if (payload != null) {
             val result = payload.status.toCheckResult()
             val summary = payload.summary?.trim().takeUnless { it.isNullOrBlank() }
                 ?: payload.reason?.trim().takeUnless { it.isNullOrBlank() }
                 ?: "模型返回结果：${result.toDisplayLabel()}"
+            val remark = root?.firstMonitorRemark(summary).orEmpty()
 
             return MonitorDecision(
                 result = result,
                 summary = summary,
                 reason = payload.reason?.trim().orEmpty(),
+                remark = remark,
                 confidence = parseConfidenceValue(payload.confidence),
                 rawResponse = rawText
             )
@@ -258,6 +261,10 @@ object ModelOutputParser {
     }
 
     private fun parseVideoAnalysisObject(rawText: String): JsonObject? {
+        return parseJsonObject(rawText)
+    }
+
+    private fun parseJsonObject(rawText: String): JsonObject? {
         return runCatching {
             gson.fromJson(extractJson(rawText), JsonObject::class.java)
         }.getOrNull()
@@ -397,6 +404,11 @@ object ModelOutputParser {
             }
         }
         return null
+    }
+
+    private fun JsonObject.firstMonitorRemark(summary: String): String? {
+        firstString("remark", "comment", "aside")?.let { return it }
+        return firstString("message")?.takeIf { it != summary }
     }
 
     private fun JsonObject.findObject(vararg keys: String): JsonObject? {
@@ -840,6 +852,8 @@ object ModelOutputParser {
         val summary: String? = null,
         @SerializedName(value = "reason", alternate = ["detail", "原因"])
         val reason: String? = null,
+        @SerializedName(value = "remark", alternate = ["comment", "aside"])
+        val remark: String? = null,
         val confidence: JsonElement? = null
     )
 

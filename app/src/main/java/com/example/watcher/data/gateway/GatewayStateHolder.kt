@@ -16,6 +16,10 @@ class GatewayStateHolder {
         val pairingBindings: StateFlow<List<GatewayPairingRecord>>
         val relayConversations: StateFlow<List<GatewayRelayConversation>>
         val relayMessages: StateFlow<List<GatewayRelayMessage>>
+        val ntfyConnectionState: StateFlow<NtfyConnectionState>
+        val ntfyDebugStats: StateFlow<NtfyDebugStats>
+        val ntfyDebugLog: StateFlow<List<NtfyDebugEntry>>
+        val relayError: StateFlow<String?>
         val apiKey: String
         val port: Int
         fun getLocalIpAddress(): String
@@ -24,6 +28,13 @@ class GatewayStateHolder {
         fun rejectPairingRequest(requestId: String)
         fun createLocalRelayConversation(agentBridgeId: String, title: String)
         fun sendPhoneRelayMessage(conversationId: String, content: String)
+        val phoneAvailable: StateFlow<Boolean>
+        fun getNtfyConfig(): NtfyRelayConfig
+        fun updateNtfyConfig(config: NtfyRelayConfig)
+        fun setPhoneAvailable(available: Boolean)
+        fun handBackConversation(conversationId: String, summary: String)
+        fun deleteConversation(conversationId: String)
+        fun clearRelayError()
     }
 
     @Volatile
@@ -46,6 +57,18 @@ class GatewayStateHolder {
 
     val relayMessages: StateFlow<List<GatewayRelayMessage>>
         get() = delegate?.relayMessages ?: MutableStateFlow(emptyList())
+
+    val ntfyConnectionState: StateFlow<NtfyConnectionState>
+        get() = delegate?.ntfyConnectionState ?: MutableStateFlow(NtfyConnectionState.Disconnected)
+
+    val ntfyDebugStats: StateFlow<NtfyDebugStats>
+        get() = delegate?.ntfyDebugStats ?: MutableStateFlow(NtfyDebugStats())
+
+    val ntfyDebugLog: StateFlow<List<NtfyDebugEntry>>
+        get() = delegate?.ntfyDebugLog ?: MutableStateFlow(emptyList())
+
+    val relayError: StateFlow<String?>
+        get() = delegate?.relayError ?: MutableStateFlow(null)
 
     val apiKey: String
         get() = delegate?.apiKey ?: ""
@@ -73,5 +96,30 @@ class GatewayStateHolder {
 
     fun sendPhoneRelayMessage(conversationId: String, content: String) {
         delegate?.sendPhoneRelayMessage(conversationId, content)
+    }
+
+    fun getNtfyConfig(): NtfyRelayConfig = delegate?.getNtfyConfig() ?: NtfyRelayConfig()
+
+    val phoneAvailable: StateFlow<Boolean>
+        get() = delegate?.phoneAvailable ?: MutableStateFlow(false)
+
+    fun updateNtfyConfig(config: NtfyRelayConfig) {
+        delegate?.updateNtfyConfig(config)
+    }
+
+    fun setPhoneAvailable(available: Boolean) {
+        delegate?.setPhoneAvailable(available)
+    }
+
+    fun handBackConversation(conversationId: String, summary: String) {
+        delegate?.handBackConversation(conversationId, summary)
+    }
+
+    fun deleteConversation(conversationId: String) {
+        delegate?.deleteConversation(conversationId)
+    }
+
+    fun clearRelayError() {
+        delegate?.clearRelayError()
     }
 }

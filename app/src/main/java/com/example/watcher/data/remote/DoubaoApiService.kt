@@ -27,6 +27,13 @@ interface DoubaoApiService {
         @Body request: DoubaoImageRequest
     ): DoubaoResponse
 
+    @POST("api/v3/chat/completions")
+    suspend fun createChatCompletion(
+        @Header("Authorization") authorization: String,
+        @Header("Content-Type") contentType: String = "application/json",
+        @Body request: DoubaoChatCompletionRequest
+    ): DoubaoChatCompletionResponse
+
     @Multipart
     @POST("api/v3/files")
     suspend fun uploadFile(
@@ -81,7 +88,12 @@ data class ContentItem(
 
 data class DoubaoImageRequest(
     val model: String,
-    val input: List<ImageMessage>
+    val input: List<ImageMessage>,
+    val stream: Boolean? = null,
+    @SerializedName("response_format") val responseFormat: ResponseFormat? = null,
+    val thinking: Thinking? = null,
+    @SerializedName("max_output_tokens") val maxOutputTokens: Int? = null,
+    val temperature: Double? = null
 )
 
 data class ImageMessage(
@@ -92,7 +104,40 @@ data class ImageMessage(
 data class ImageContentItem(
     val type: String,
     val text: String? = null,
-    @SerializedName("image_url") val imageUrl: String? = null
+    @SerializedName("image_url") val imageUrl: String? = null,
+    val detail: String? = null,
+    @SerializedName("image_pixel_limit") val imagePixelLimit: ImagePixelLimit? = null
+)
+
+data class ImagePixelLimit(
+    @SerializedName("max_pixels") val maxPixels: Int,
+    @SerializedName("min_pixels") val minPixels: Int
+)
+
+data class DoubaoChatCompletionRequest(
+    val model: String,
+    val messages: List<DoubaoChatMessage>,
+    val stream: Boolean? = null,
+    @SerializedName("max_tokens") val maxTokens: Int? = null,
+    val temperature: Double? = null,
+    val thinking: Thinking? = null
+)
+
+data class DoubaoChatMessage(
+    val role: String,
+    val content: List<DoubaoChatContentItem>
+)
+
+data class DoubaoChatContentItem(
+    val type: String,
+    val text: String? = null,
+    @SerializedName("image_url") val imageUrl: DoubaoChatImageUrl? = null
+)
+
+data class DoubaoChatImageUrl(
+    val url: String,
+    val detail: String? = null,
+    @SerializedName("image_pixel_limit") val imagePixelLimit: ImagePixelLimit? = null
 )
 
 data class DoubaoVideoRequest(
@@ -136,6 +181,24 @@ data class DoubaoResponse(
     @SerializedName("created_at") val createdAt: Long? = null,
     val output: List<OutputItem>? = null,
     val usage: UsageInfo? = null
+)
+
+data class DoubaoChatCompletionResponse(
+    val id: String? = null,
+    val model: String? = null,
+    val choices: List<DoubaoChatChoice>? = null,
+    val usage: UsageInfo? = null
+)
+
+data class DoubaoChatChoice(
+    val index: Int? = null,
+    val message: DoubaoChatChoiceMessage? = null,
+    @SerializedName("finish_reason") val finishReason: String? = null
+)
+
+data class DoubaoChatChoiceMessage(
+    val role: String? = null,
+    val content: String? = null
 )
 
 data class OutputItem(

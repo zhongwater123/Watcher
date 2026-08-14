@@ -2,14 +2,16 @@ package com.example.watcher.data.repository.council
 
 import android.graphics.Bitmap
 import android.util.Log
-import com.example.watcher.data.agent.orchestrator.AgentBridge
+import com.example.watcher.data.council.agent.orchestration.CouncilDiscussionRequest
+import com.example.watcher.data.council.agent.orchestration.CouncilExpertAgentBinding
+import com.example.watcher.data.council.agent.orchestration.CouncilExpertAgentEngine
+import com.example.watcher.data.council.agent.orchestration.CouncilGatherRequest
 import com.example.watcher.data.local.AiAudienceMessageDao
 import com.example.watcher.data.local.CouncilExpertDao
 import com.example.watcher.data.local.CouncilKnowledgeDao
 import com.example.watcher.data.model.CouncilKnowledgeEntity
 import com.example.watcher.data.model.CouncilAnalysisPhase
 import com.example.watcher.data.model.CouncilConfig
-import com.example.watcher.data.model.CouncilDiscussionKind
 import com.example.watcher.data.model.CouncilDiscussionSummary
 import com.example.watcher.data.model.CouncilDiscussionTurn
 import com.example.watcher.data.model.CouncilExpertConsoleState
@@ -28,7 +30,6 @@ import com.example.watcher.data.repository.SceneMemoryManager
 import com.example.watcher.data.repository.context.LiveSharedContextProfiles
 import com.example.watcher.data.repository.context.LiveSharedContextProvider
 import com.example.watcher.data.repository.context.LiveSharedContextSnapshot
-import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -62,6 +63,7 @@ class CouncilManager(
     messageDao: AiAudienceMessageDao,
     memoryManager: CommentaryMemoryManager,
     sceneMemoryManager: SceneMemoryManager,
+    private val expertAgentEngine: CouncilExpertAgentEngine,
     sharedContextProvider: LiveSharedContextProvider? = null
 ) {
     companion object {
@@ -83,14 +85,6 @@ class CouncilManager(
     private val responseParser = CouncilResponseParser()
     private val coordinator = CouncilCoordinator()
     private val sceneMemory = sceneMemoryManager
-    // Agent framework
-    private val agentSessionMemory = com.example.watcher.data.agent.memory.AgentSessionMemory()
-    private val agentKnowledgeStore = com.example.watcher.data.agent.memory.AgentKnowledgeStore(knowledgeDao)
-    private val agentOrchestrator = com.example.watcher.data.agent.orchestrator.AgentOrchestrator(
-        sessionMemory = agentSessionMemory,
-        knowledgeStore = agentKnowledgeStore,
-        sceneMemoryManager = sceneMemoryManager
-    )
     private val contextProvider = sharedContextProvider ?: LiveSharedContextProvider(
         messageDao = messageDao,
         memoryManager = memoryManager,
@@ -101,7 +95,7 @@ class CouncilManager(
     private val analysisMutex = Mutex()
     private val debugPromptCache = mutableMapOf<String, Pair<Long, String>>()
     private val debugResponseCache = mutableMapOf<String, Pair<Long, String>>()
-    // Legacy session memory map replaced by agentSessionMemory
+    // Accumulated analysis history for end-of-session knowledge extraction.
     // Accumulated analysis history for end-of-session knowledge extraction
     private val sessionOpinionHistory = mutableListOf<CouncilExpertOpinion>()
     private val sessionTurnHistory = mutableListOf<CouncilDiscussionTurn>()
@@ -125,7 +119,7 @@ class CouncilManager(
     ) {
         config = initialConfig
         isFirstAnalysis = true
-        agentSessionMemory.clear()
+        expertAgentEngine.clearSession()
         sessionOpinionHistory.clear()
         sessionTurnHistory.clear()
         sessionSynthesisHistory.clear()
@@ -151,7 +145,7 @@ class CouncilManager(
             val opinions = sessionOpinionHistory.toList()
             val turns = sessionTurnHistory.toList()
             val syntheses = sessionSynthesisHistory.toList()
-            val memories = agentSessionMemory.allEntries()
+            val memories = expertAgentEngine.allSessionMemory()
             scope.launch {
                 extractAndPersistKnowledge(cfg, opinions, turns, syntheses, memories)
             }
@@ -175,7 +169,7 @@ class CouncilManager(
     fun triggerAnalysis(reason: String = "manual") { triggerChannel.trySend(reason) }
     fun getLastPrompt(expertId: String): String? = debugPromptCache[expertId]?.second
     fun getLastResponse(expertId: String): String? = debugResponseCache[expertId]?.second
-    fun getSessionMemory(expertId: String): List<String> = agentSessionMemory.read(expertId)
+    fun getSessionMemory(expertId: String): List<String> = expertAgentEngine.readSessionMemory(expertId)
 
     private suspend fun runWorkerLoop() {
         while (currentCoroutineContext().isActive) {
@@ -291,26 +285,35 @@ class CouncilManager(
             discussionRound = 0,
             console = defaultConsoleStates(lineup, CouncilExpertStage.Standby, "排队中", "等待分析轮次。")
         )
-        // ── Agent Framework: Gathering via AgentOrchestrator ──
-        val agentContext = AgentBridge.contextFromSnapshot(context, config, roundNumber = sessionOpinionHistory.size / specialists.size.coerceAtLeast(1) + 1)
-        val specById = (specialists + listOfNotNull(synthesizer)).associateBy { it.expertId }
-        val registeredAgents = specialists.map { spec ->
+        // Council expert gathering runs through the council-owned engine.
+        val councilAgentSessionId = "council_${lastAnalysisAt}"
+        val expertBindings = specialists.map { spec ->
             val provider = resolveProvider(spec, providers, fallbackProvider)
             updateConsoleState(spec.expertId, CouncilExpertStage.Observing, "读取上下文", "扫描最新画面、语音和记忆。", isLead = true)
-            AgentBridge.specToRegisteredAgent(spec, provider.toLlm(), agentSessionMemory, agentKnowledgeStore, sceneMemory)
+            CouncilExpertAgentBinding(spec = spec, provider = provider.toLlm())
         }
 
-        val gatheringResults = agentOrchestrator.runGathering(registeredAgents, agentContext, sessionId = "council_${lastAnalysisAt}")
-
-        val initialOpinions = gatheringResults.map { (agentId, opinion) ->
-            val spec = specById[agentId]!!
-            val councilOpinion = AgentBridge.agentOpinionToCouncil(agentId, spec, opinion)
+        val initialOpinions = expertAgentEngine.gather(
+            CouncilGatherRequest(
+                experts = expertBindings,
+                context = context,
+                config = config,
+                roundNumber = sessionOpinionHistory.size / specialists.size.coerceAtLeast(1) + 1,
+                sessionId = councilAgentSessionId
+            )
+        ).onEach { councilOpinion ->
             publishOpinion(councilOpinion)
-            updateConsoleState(agentId, CouncilExpertStage.Voted, opinion.summary.take(60), opinion.voteReason.take(80),
-                voteLevel = councilOpinion.voteLevel, confidence = opinion.confidence, isLead = false)
-            councilOpinion
+            updateConsoleState(
+                councilOpinion.expertId,
+                CouncilExpertStage.Voted,
+                councilOpinion.summary.take(60),
+                councilOpinion.voteReason.take(80),
+                voteLevel = councilOpinion.voteLevel,
+                confidence = councilOpinion.confidence,
+                isLead = false
+            )
         }
-        // Observation requests now handled by agent tools — clear stale ones
+        // Observation requests are handled by council tools; clear stale ones.
         sceneMemory.setExpertRequests(emptyList())
 
         _state.value = _state.value.copy(
@@ -322,39 +325,26 @@ class CouncilManager(
             lastTrigger = trigger,
             errorMessage = null
         )
-        // ── Agent Framework: Discussion via AgentOrchestrator ──
-        val opinionMap = gatheringResults.toMap()
-        val agentOpinionMap = opinionMap.mapValues { (_, op) -> op }
+        // Council discussion remains inside the same council session.
         val allDiscussionTurns = mutableListOf<CouncilDiscussionTurn>()
         for (round in 1..MAX_DISCUSSION_ROUNDS) {
             _state.value = _state.value.copy(discussionRound = round)
-            val agentTurns = agentOrchestrator.runDiscussionRound(
-                agents = registeredAgents,
-                opinions = agentOpinionMap,
-                previousTurns = allDiscussionTurns.map { AgentBridge.councilTurnToAgent(it) },
-                context = agentContext,
-                sessionId = "council_${lastAnalysisAt}"
+            val agentTurns = expertAgentEngine.discuss(
+                CouncilDiscussionRequest(
+                    sessionId = councilAgentSessionId,
+                    round = round,
+                    previousTurns = allDiscussionTurns
+                )
             )
             if (agentTurns.isEmpty()) break
-            agentTurns.forEach { turn ->
-                val councilTurn = CouncilDiscussionTurn(
-                    id = "discussion_${turn.kind}_${UUID.randomUUID().toString().take(8)}",
-                    round = round,
-                    fromExpertId = registeredAgents.firstOrNull { it.profile.name == turn.fromAgent }?.id ?: "",
-                    fromExpertName = turn.fromAgent,
-                    toExpertId = registeredAgents.firstOrNull { it.profile.name == turn.toAgent }?.id ?: "",
-                    toExpertName = turn.toAgent,
-                    kind = if (turn.kind == "ask") CouncilDiscussionKind.Ask else CouncilDiscussionKind.Reply,
-                    message = turn.message,
-                    detail = turn.detail
-                )
+            agentTurns.forEach { councilTurn ->
                 allDiscussionTurns += councilTurn
                 publishDiscussionTurn(councilTurn, round)
             }
         }
         val discussionTurns = allDiscussionTurns.toList()
 
-        // ── Synthesis via agent (synthesizer or fallback) ──
+        // Synthesis still uses the selected council provider.
         val synthesisProvider = synthesizer?.let { resolveProvider(it, providers, fallbackProvider) } ?: fallbackProvider
         if (synthesizer != null) {
             updateConsoleState(synthesizer.expertId, CouncilExpertStage.Synthesizing, "整合最终建议", "合并各专家发现、风险和行动建议。", isLead = true)
@@ -376,10 +366,12 @@ class CouncilManager(
             lastTrigger = trigger,
             errorMessage = null
         )
-        // Session memory now managed by agent framework tools (write_memory)
-        // But also record a summary line for backward compatibility with UI display
+        // Keep one summary line for the existing session-memory UI.
         initialOpinions.forEach { opinion ->
-            agentSessionMemory.write(opinion.expertId, "第${sessionOpinionHistory.size / specialists.size.coerceAtLeast(1) + 1}轮: ${opinion.summary}")
+            expertAgentEngine.recordSessionSummary(
+                opinion.expertId,
+                "第${sessionOpinionHistory.size / specialists.size.coerceAtLeast(1) + 1}轮: ${opinion.summary}"
+            )
         }
         // Accumulate session history for end-of-session knowledge extraction
         sessionOpinionHistory.addAll(initialOpinions)

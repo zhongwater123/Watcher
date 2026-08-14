@@ -9,7 +9,9 @@ import com.example.watcher.data.model.VideoRunStatus
 import com.example.watcher.data.model.VideoSegmentRun
 import com.example.watcher.data.remote.DoubaoApiService
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicInteger
@@ -42,6 +44,7 @@ internal class VideoSegmentProcessor(
         task: VideoProcessTaskDraft,
         segmentCount: Int,
         runId: Long,
+        traceId: String,
         streamingOutputEnabled: Boolean,
         recordedSegmentCount: AtomicInteger,
         analyzedSegmentCount: AtomicInteger,
@@ -100,7 +103,9 @@ internal class VideoSegmentProcessor(
                         recordedSegment.file.nameWithoutExtension + "_merged.mp4"
                     )
                     val merged = runCatching {
-                        AudioSegmentSlicer().mergeVideoAndAudio(recordedSegment.file, audioFile, mergedFile)
+                        withContext(Dispatchers.IO) {
+                            AudioSegmentSlicer().mergeVideoAndAudio(recordedSegment.file, audioFile, mergedFile)
+                        }
                     }.onFailure { error ->
                         Log.e(TAG, "Segment ${recordedSegment.segmentNumber} merge FAILED: ${error.message}", error)
                     }.getOrDefault(false)
@@ -254,6 +259,11 @@ internal class VideoSegmentProcessor(
                 )
             )
             Log.d(TAG, "Segment ${recordedSegment.segmentNumber} analysis starting merged=$isMergedSegmentVideo audioId=$remoteAudioFileId")
+            val traceInputMode = when (analysisInputMode) {
+                SegmentAnalysisInputMode.MergedSegmentVideo -> "merged_video"
+                SegmentAnalysisInputMode.SeparateVideoAudio -> "separate_video_audio"
+                SegmentAnalysisInputMode.VideoOnly -> "video_only"
+            }
             val analysisResult = try {
                 segmentAnalyzer.analyze(
                     fileId = remoteFile.fileId,
@@ -261,7 +271,10 @@ internal class VideoSegmentProcessor(
                     isMergedInput = isMergedSegmentVideo,
                     task = task,
                     segmentNumber = recordedSegment.segmentNumber,
-                    segmentCount = segmentCount
+                    segmentCount = segmentCount,
+                    traceId = traceId,
+                    runId = runId,
+                    inputMode = traceInputMode
                 )
             } catch (error: Exception) {
                 throw VideoProcessException(

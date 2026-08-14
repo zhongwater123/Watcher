@@ -14,6 +14,10 @@ It is not just a future-facing design stub. The framework is already integrated 
 
 This document describes the framework as it exists now.
 
+`data/council/agent` and `data/fitness/agent` are business-owned implementations, not framework
+adapters. They do not import or execute through this package. Shared model-provider access is injected
+at the application boundary through `LlmWalletRepository`.
+
 ## Design Goals
 
 The framework is built to support durable, autonomous, tool-using agents inside an Android app environment.

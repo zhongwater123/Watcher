@@ -99,13 +99,16 @@ data class GatewayRelayConversation(
     val lastMessageAt: Long? = null
 )
 
+enum class SendStatus { Sending, Confirmed, Failed }
+
 data class GatewayRelayMessage(
     val id: Long,
     val conversationId: String,
     val author: String,
     val content: String,
     val createdAt: Long = System.currentTimeMillis(),
-    val seenByAgentAt: Long? = null
+    val seenByAgentAt: Long? = null,
+    val sendStatus: SendStatus = SendStatus.Confirmed
 )
 
 data class GatewayAutomationTrigger(
@@ -156,4 +159,65 @@ data class GatewayRuntimeStatus(
     val lastRequestMethod: String? = null,
     val lastRequestPath: String? = null,
     val lastError: String? = null
+)
+
+// ── ntfy Relay ──────────────────────────────────────────────────
+
+data class NtfyRelayConfig(
+    val serverUrl: String = "",
+    val topic: String = "",  // auto-generated per device on first use
+    val authToken: String? = null,
+    val enabled: Boolean = false
+)
+
+internal fun validateNtfyRelayServerUrl(serverUrl: String): String? {
+    val normalized = serverUrl.trim()
+    if (normalized.isBlank()) return null
+    val isHttp = normalized.startsWith("http://", ignoreCase = true)
+    val isHttps = normalized.startsWith("https://", ignoreCase = true)
+    if (!isHttp && !isHttps) {
+        return "ntfy server URL must use http:// or https://."
+    }
+    return null
+}
+
+data class NtfyRelayPayload(
+    val schema: String = "relay.v1",
+    val type: String = "message",  // "handoff" | "message" | "hand_back" | "presence"
+    val messageId: String = generateMessageId(),
+    val conversationId: String = "",
+    val turnId: Int = 0,
+    val replyTo: String? = null,
+    val author: String,
+    val content: String,
+    val createdAt: String = java.time.OffsetDateTime.now().toString(),
+    val ts: Long = System.currentTimeMillis(),
+    val title: String? = null,     // handoff 时携带
+    val summary: String? = null,   // handoff 时携带
+    val status: String? = null     // presence 时: "available" | "offline"
+)
+
+private fun generateMessageId(): String {
+    val hex = java.util.UUID.randomUUID().toString().replace("-", "").take(12)
+    return "msg_$hex"
+}
+
+enum class NtfyConnectionState { Disconnected, Connecting, Connected }
+
+data class NtfyDebugEntry(
+    val ts: Long,
+    val direction: String,  // "tx" or "rx"
+    val type: String,
+    val author: String,
+    val conversationId: String,
+    val contentPreview: String
+)
+
+data class NtfyDebugStats(
+    val connectionState: NtfyConnectionState = NtfyConnectionState.Disconnected,
+    val lastHeartbeatAt: Long = 0L,
+    val publishCount: Int = 0,
+    val receiveCount: Int = 0,
+    val activeConversationCount: Int = 0,
+    val subscriptionStartedAt: Long = 0L
 )

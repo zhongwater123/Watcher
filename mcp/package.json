@@ -1,9 +1,9 @@
 {
   "name": "watcher-mcp",
-  "version": "0.5.0",
+  "version": "0.7.0",
   "type": "module",
   "license": "MIT",
-  "description": "MCP server that gives AI agents real-world perception through the Watcher Android app gateway",
+  "description": "MCP server for cross-device AI conversation handoff and real-time device control via the Watcher Android app",
   "author": "Watcher Contributors",
   "repository": {
     "type": "git",

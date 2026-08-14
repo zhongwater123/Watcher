@@ -20,7 +20,9 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Audio configuration: 48kHz mono, AAC 128kbps, VOICE_RECOGNITION source,
  * NoiseSuppressor + AcousticEchoCanceler enabled when available.
  */
-class ContinuousAudioRecorder {
+class ContinuousAudioRecorder(
+    private val onPcmFrame: ((ContinuousPcmFrame) -> Unit)? = null
+) {
     private var audioRecord: AudioRecord? = null
     private var encoder: MediaCodec? = null
     private var muxer: MediaMuxer? = null
@@ -105,19 +107,14 @@ class ContinuousAudioRecorder {
     }
 
     fun stop(): ContinuousAudioResult {
-        stopRequested.set(true)
-        recordingThread?.join(3_000L)
-        if (recordingThread?.isAlive == true) {
-            recordingThread?.interrupt()
-            recordingThread?.join(1_000L)
-        }
-        recordingThread = null
+        requestRecordingStop(unblockRead = false)
+        waitForRecordingThread()
 
         val durationMs = samplesWritten * 1_000L / SAMPLE_RATE
         val file = outputFile ?: File("")
         val hasAudio = durationMs > 0L && file.exists() && file.length() > 0L
 
-        release()
+        releaseResources()
 
         return ContinuousAudioResult(
             file = file,
@@ -129,6 +126,33 @@ class ContinuousAudioRecorder {
     }
 
     fun release() {
+        requestRecordingStop(unblockRead = true)
+        waitForRecordingThread()
+        releaseResources()
+    }
+
+    private fun requestRecordingStop(unblockRead: Boolean) {
+        stopRequested.set(true)
+        if (unblockRead) {
+            runCatching { audioRecord?.stop() }
+        }
+    }
+
+    private fun waitForRecordingThread() {
+        val thread = recordingThread ?: return
+        if (thread == Thread.currentThread()) return
+        thread.join(3_000L)
+        if (thread.isAlive) {
+            runCatching { audioRecord?.stop() }
+            thread.interrupt()
+            thread.join(1_000L)
+        }
+        if (recordingThread == thread) {
+            recordingThread = null
+        }
+    }
+
+    private fun releaseResources() {
         runCatching { audioRecord?.stop() }
         runCatching { audioRecord?.release() }
         runCatching { noiseSuppressor?.release() }
@@ -184,6 +208,17 @@ class ContinuousAudioRecorder {
             val writeSize = minOf(size - offset, inputBuffer.remaining())
             inputBuffer.put(pcmData, offset, writeSize)
             val presentationTimeUs = samplesWritten * 1_000_000L / SAMPLE_RATE
+            onPcmFrame?.invoke(
+                ContinuousPcmFrame(
+                    pcm = pcmData.copyOfRange(offset, offset + writeSize),
+                    sampleRate = SAMPLE_RATE,
+                    channelCount = CHANNEL_COUNT,
+                    bitsPerSample = BITS_PER_SAMPLE,
+                    relativeStartMs = presentationTimeUs / 1_000L,
+                    durationMs = (writeSize / BYTES_PER_SAMPLE) * 1_000L / SAMPLE_RATE,
+                    capturedAtMs = startedAtMs + presentationTimeUs / 1_000L
+                )
+            )
             codec.queueInputBuffer(inputIndex, 0, writeSize, presentationTimeUs, 0)
             samplesWritten += writeSize / BYTES_PER_SAMPLE
             offset += writeSize
@@ -241,10 +276,21 @@ class ContinuousAudioRecorder {
         private const val SAMPLE_RATE = 48_000
         private const val CHANNEL_COUNT = 1
         private const val BIT_RATE = 128_000
+        private const val BITS_PER_SAMPLE = 16
         private const val CHUNK_BYTES = 4_096
         private const val BYTES_PER_SAMPLE = 2
     }
 }
+
+data class ContinuousPcmFrame(
+    val pcm: ByteArray,
+    val sampleRate: Int,
+    val channelCount: Int,
+    val bitsPerSample: Int,
+    val relativeStartMs: Long,
+    val durationMs: Long,
+    val capturedAtMs: Long
+)
 
 data class ContinuousAudioResult(
     val file: File,

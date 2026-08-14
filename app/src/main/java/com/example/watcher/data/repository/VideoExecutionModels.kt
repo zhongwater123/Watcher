@@ -1,6 +1,9 @@
 package com.example.watcher.data.repository
 
 import com.example.watcher.data.model.VideoAnalysisResult
+import com.example.watcher.data.model.ClassroomKnowledgeFrameRef
+import com.example.watcher.data.model.ClassroomKnowledgeTree
+import com.example.watcher.data.model.ClassroomKnowledgeTreeProgress
 import com.example.watcher.data.model.VideoProcessRun
 import com.example.watcher.data.model.VideoProcessTaskDraft
 import com.example.watcher.data.model.VideoRunStatus
@@ -31,6 +34,7 @@ data class VideoExecutionStatusUpdate(
     val finalConclusion: String = "",
     val timelineEvents: List<VideoTimelineEvent> = emptyList(),
     val streamingBuffer: String? = null,
+    val playbackPath: String? = null,
     val streamingEnabled: Boolean = false,
     val isStreamingActive: Boolean = false,
     val isRecordingActive: Boolean = false,
@@ -46,10 +50,29 @@ data class VideoExecutionStatusUpdate(
     val stopRequested: Boolean = false,
     val segmentFeedbacks: List<VideoSegmentFeedback> = emptyList(),
     val errorMessage: String? = null,
+    val degradedReason: String? = null,
     val currentSegmentHasAudio: Boolean? = null,
     val segmentAudioResults: List<Boolean>? = null,
     val pipelinePhase: String? = null,
-    val videoRefinementInputMode: String? = null
+    val videoRefinementInputMode: String? = null,
+    val realtimeTranscript: String = "",
+    val stableTranscript: String = "",
+    val realtimeInsights: List<String> = emptyList(),
+    val realtimeKnowledgeTree: ClassroomKnowledgeTree? = null,
+    val changedKnowledgeNodeIds: List<String>? = null,
+    val newKnowledgeNodeIds: List<String>? = null,
+    val realtimeKnowledgeTreeStatus: String = "",
+    val realtimeKnowledgeTreeProgress: ClassroomKnowledgeTreeProgress = ClassroomKnowledgeTreeProgress(),
+    val realtimeKnowledgeFrameRefs: List<ClassroomKnowledgeFrameRef> = emptyList(),
+    val realtimeConnectionState: String = "",
+    val realtimeAudioLagMs: Long = 0L,
+    val realtimeDroppedFrameCount: Int = 0,
+    val realtimeBackfillSegmentCount: Int = 0,
+    val realtimePendingFrameCount: Int = 0,
+    val realtimeAsrLogId: String = "",
+    val realtimeSpeechProvider: String = "",
+    val realtimeSpeechFallbackReason: String? = null,
+    val realtimeSpeechSessionId: String = ""
 )
 
 data class VideoExecutionResult(

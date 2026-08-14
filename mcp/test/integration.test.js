@@ -6,7 +6,7 @@
  */
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
@@ -15,6 +15,7 @@ import assert from "node:assert/strict";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const SERVER_JS = path.resolve(__dirname, "..", "server.js");
+const NTFY_CLIENT_JS = path.resolve(__dirname, "..", "lib", "ntfy-client.js");
 
 const API_KEY = "test-api-key-12345";
 const DEVICE_ID = "test-device-001";
@@ -26,9 +27,7 @@ function createMockGateway() {
   const tasks = new Map();
   let taskCounter = 0;
   const pairingRequests = new Map();
-  const relayConversations = new Map();
-  const relayMessages = new Map();
-  let relayMessageCounter = 0;
+  // Relay chat now uses ntfy - no mock gateway relay state needed
 
   const server = createServer((req, res) => {
     const url = new URL(req.url, `http://localhost`);
@@ -108,92 +107,7 @@ function createMockGateway() {
       });
     }
 
-    if (url.pathname === "/api/agent-relay/conversations" && req.method === "POST") {
-      return readBody(req, (body) => {
-        const now = Date.now();
-        const id = body.conversationId || `relay_${relayConversations.size + 1}`;
-        const existing = relayConversations.get(id);
-        const conversation = {
-          id,
-          agentBridgeId: "claude-code",
-          agentBridgeName: "Claude Code",
-          title: body.title || existing?.title || "PC work",
-          summary: body.summary || existing?.summary || "",
-          status: body.status || existing?.status || "active",
-          createdAt: existing?.createdAt || now,
-          updatedAt: now,
-          lastMessageAt: existing?.lastMessageAt || null
-        };
-        relayConversations.set(id, conversation);
-        if (!relayMessages.has(id)) {
-          relayMessageCounter += 1;
-          const phoneMessage = {
-            id: relayMessageCounter,
-            conversationId: id,
-            author: "phone_user",
-            content: "手机端接续：请继续刚才的工作",
-            createdAt: now,
-            seenByAgentAt: null
-          };
-          relayMessages.set(id, [phoneMessage]);
-          conversation.lastMessageAt = now;
-        }
-        json(res, { ok: true, data: conversation }, 201);
-      });
-    }
-
-    if (url.pathname === "/api/agent-relay/conversations" && req.method === "GET") {
-      return json(res, { ok: true, data: Array.from(relayConversations.values()) });
-    }
-
-    const relayMessagesMatch = url.pathname.match(/^\/api\/agent-relay\/conversations\/([^/]+)\/messages$/);
-    if (relayMessagesMatch) {
-      const conversationId = decodeURIComponent(relayMessagesMatch[1]);
-      const conversation = relayConversations.get(conversationId);
-      if (!conversation) return json(res, { ok: false, error: "not_found", errorCode: "not_found" }, 404);
-      if (req.method === "GET") {
-        const afterMessageId = Number(url.searchParams.get("afterMessageId") || 0);
-        const messages = (relayMessages.get(conversationId) || []).filter((message) => message.id > afterMessageId);
-        return json(res, { ok: true, data: messages });
-      }
-      if (req.method === "POST") {
-        return readBody(req, (body) => {
-          relayMessageCounter += 1;
-          const message = {
-            id: relayMessageCounter,
-            conversationId,
-            author: "pc_agent",
-            content: body.content,
-            createdAt: Date.now(),
-            seenByAgentAt: null
-          };
-          relayMessages.set(conversationId, [...(relayMessages.get(conversationId) || []), message]);
-          conversation.lastMessageAt = message.createdAt;
-          conversation.updatedAt = message.createdAt;
-          json(res, { ok: true, data: message }, 201);
-        });
-      }
-    }
-
-    const relaySeenMatch = url.pathname.match(/^\/api\/agent-relay\/conversations\/([^/]+)\/seen$/);
-    if (relaySeenMatch && req.method === "POST") {
-      const conversationId = decodeURIComponent(relaySeenMatch[1]);
-      if (!relayConversations.has(conversationId)) return json(res, { ok: false, error: "not_found", errorCode: "not_found" }, 404);
-      return readBody(req, (body) => {
-        const throughMessageId = Number(body.throughMessageId || Number.MAX_SAFE_INTEGER);
-        let updatedCount = 0;
-        const seenAt = Date.now();
-        const updated = (relayMessages.get(conversationId) || []).map((message) => {
-          if (message.author === "phone_user" && !message.seenByAgentAt && message.id <= throughMessageId) {
-            updatedCount += 1;
-            return { ...message, seenByAgentAt: seenAt };
-          }
-          return message;
-        });
-        relayMessages.set(conversationId, updated);
-        json(res, { ok: true, data: { conversationId, updatedCount, seenAt } });
-      });
-    }
+    // Relay chat routes removed - now handled by ntfy directly
 
     if (url.pathname === "/api/stream/snapshot") {
       res.writeHead(200, { "Content-Type": "image/jpeg" });
@@ -388,7 +302,7 @@ async function run() {
   check("has watcher.discover_devices", tools.some((t) => t.name === "watcher.discover_devices"));
   check("has watcher.bind_device", tools.some((t) => t.name === "watcher.bind_device"));
   check("has watcher.wait_for_condition", tools.some((t) => t.name === "watcher.wait_for_condition"));
-  check("has watcher.register_relay_conversation", tools.some((t) => t.name === "watcher.register_relay_conversation"));
+  check("has watcher.send_relay_message", tools.some((t) => t.name === "watcher.send_relay_message"));
   const bindTool = tools.find((t) => t.name === "watcher.bind_device");
   check("bind_device no longer requires apiKey", !bindTool?.inputSchema?.required?.includes("apiKey"));
   check("bind_device accepts timeoutMs", !!bindTool?.inputSchema?.properties?.timeoutMs);
@@ -490,46 +404,37 @@ async function run() {
   check("commentary entries returns array", Array.isArray(commEntriesData?.entries));
   check("commentary entries has content", commEntriesData?.entries?.length > 0);
 
-  console.log("\n--- Relay Chat ---");
-  const relayRegisterResp = await client.callTool("watcher.register_relay_conversation", {
-    title: "Half-finished PC work",
-    summary: "Need to continue from phone"
+  console.log("\n--- Relay Chat (ntfy) ---");
+  const ntfyClient = await import(pathToFileURL(NTFY_CLIENT_JS).href);
+  const relayTools = tools.filter((t) => t.name.includes("relay"));
+  check("relay tools include get_relay_messages", relayTools.some((t) => t.name === "watcher.get_relay_messages"));
+  check("relay tools include send_relay_message", relayTools.some((t) => t.name === "watcher.send_relay_message"));
+  check("get_relay_messages requires conversationId", tools.find((t) => t.name === "watcher.get_relay_messages")?.inputSchema?.required?.includes("conversationId"));
+  check("send_relay_message requires content", tools.find((t) => t.name === "watcher.send_relay_message")?.inputSchema?.required?.includes("content"));
+  check("ntfy client has no default server", ntfyClient.DEFAULT_NTFY_SERVER === "");
+  check("ntfy client has no default auth token", ntfyClient.DEFAULT_NTFY_AUTH_TOKEN == null);
+
+  const missingRelayResp = await client.callTool("watcher.check_phone_available", { topic: "watcher-test" });
+  const missingRelayData = parseToolResult(missingRelayResp);
+  check("check_phone_available requires explicit ntfy server", missingRelayResp?.result?.isError === true);
+  check("missing ntfy server error is explicit", missingRelayData?.error === "ntfyServerUrl is required.");
+
+  const httpRelayResp = await client.callTool("watcher.check_phone_available", {
+    ntfyServerUrl: "http://ntfy.example.test",
+    topic: "watcher-test"
   });
-  const relayRegisterData = parseToolResult(relayRegisterResp);
-  const conversationId = relayRegisterData?.conversation?.id;
-  check("register_relay_conversation returns conversation", !!conversationId);
-  check("relay conversation title matches", relayRegisterData?.conversation?.title === "Half-finished PC work");
+  const httpRelayData = parseToolResult(httpRelayResp);
+  check("check_phone_available accepts explicit http relay config", httpRelayResp?.result?.isError !== true);
+  check("explicit http relay config reaches network check", httpRelayData?.available === false && !!httpRelayData?.error);
 
-  const relayListResp = await client.callTool("watcher.list_relay_conversations", {});
-  const relayListData = parseToolResult(relayListResp);
-  check("list_relay_conversations returns array", Array.isArray(relayListData?.conversations));
-  check("list_relay_conversations includes registered conversation", relayListData?.conversations?.some((c) => c.id === conversationId));
-
-  const relayMessagesResp = await client.callTool("watcher.get_relay_messages", { conversationId });
-  const relayMessagesData = parseToolResult(relayMessagesResp);
-  const firstRelayMessageId = relayMessagesData?.messages?.[0]?.id;
-  check("get_relay_messages returns phone message", relayMessagesData?.messages?.[0]?.author === "phone_user");
-
-  const relaySeenResp = await client.callTool("watcher.mark_relay_messages_seen", {
-    conversationId,
-    throughMessageId: firstRelayMessageId
+  const httpsRelayResp = await client.callTool("watcher.check_phone_available", {
+    ntfyServerUrl: "https://127.0.0.1:1",
+    topic: "watcher-test",
+    authToken: "explicit-token"
   });
-  const relaySeenData = parseToolResult(relaySeenResp);
-  check("mark_relay_messages_seen updates message", relaySeenData?.result?.updatedCount === 1);
-
-  const relayReplyResp = await client.callTool("watcher.send_relay_message", {
-    conversationId,
-    content: "PC Agent 回复：我会继续处理"
-  });
-  const relayReplyData = parseToolResult(relayReplyResp);
-  check("send_relay_message returns pc_agent message", relayReplyData?.message?.author === "pc_agent");
-
-  const relayAfterResp = await client.callTool("watcher.get_relay_messages", {
-    conversationId,
-    afterMessageId: firstRelayMessageId
-  });
-  const relayAfterData = parseToolResult(relayAfterResp);
-  check("get_relay_messages supports afterMessageId", relayAfterData?.messages?.length === 1);
+  const httpsRelayData = parseToolResult(httpsRelayResp);
+  check("check_phone_available accepts explicit https relay config", httpsRelayResp?.result?.isError !== true);
+  check("explicit https relay config reaches network check", httpsRelayData?.available === false && !!httpsRelayData?.error);
 
   // Summary
   console.log(`\n${"=".repeat(40)}`);

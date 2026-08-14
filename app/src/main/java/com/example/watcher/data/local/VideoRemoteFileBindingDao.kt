@@ -14,6 +14,15 @@ interface VideoRemoteFileBindingDao {
     @Query("SELECT * FROM video_remote_file_bindings WHERE runId = :runId ORDER BY assetKind ASC, segmentRunId ASC, id ASC")
     fun observeForRun(runId: Long): Flow<List<VideoRemoteFileBindingEntity>>
 
+    @Query("SELECT * FROM video_remote_file_bindings WHERE runId = :runId AND assetKind = :assetKind ORDER BY updatedAt DESC, id DESC")
+    fun observeForRunAndAssetKind(runId: Long, assetKind: String): Flow<List<VideoRemoteFileBindingEntity>>
+
+    @Query("SELECT * FROM video_remote_file_bindings WHERE runId = :runId ORDER BY assetKind ASC, segmentRunId ASC, id ASC LIMIT :limit")
+    fun observeForRunLimited(runId: Long, limit: Int): Flow<List<VideoRemoteFileBindingEntity>>
+
+    @Query("SELECT COUNT(*) FROM video_remote_file_bindings WHERE runId = :runId")
+    fun observeCountForRun(runId: Long): Flow<Int>
+
     @Query("SELECT * FROM video_remote_file_bindings WHERE runId = :runId ORDER BY assetKind ASC, segmentRunId ASC, id ASC")
     suspend fun getForRun(runId: Long): List<VideoRemoteFileBindingEntity>
 

@@ -86,6 +86,22 @@ class VideoRemoteFileResolver(
         )
     }
 
+    suspend fun resolveUserDataFile(
+        file: File,
+        runId: Long,
+        assetKind: VideoRemoteAssetKind,
+        mediaType: String
+    ): RemoteFileResolution {
+        return resolveFile(
+            file = file,
+            runId = runId,
+            segmentRunId = null,
+            assetKind = assetKind,
+            mediaType = mediaType,
+            samplingFps = null
+        )
+    }
+
     private suspend fun resolveFile(
         file: File,
         runId: Long,
@@ -177,10 +193,10 @@ class VideoRemoteFileResolver(
         val bindingWithId = if (uploadingBinding.id == 0L) uploadingBinding.copy(id = bindingId) else uploadingBinding
 
         return try {
-            val fileId = if (mediaType.startsWith("audio/")) {
-                uploadAudioFile(file, mediaType)
-            } else {
-                uploadVideoFile(file, samplingFps ?: 1)
+            val fileId = when {
+                mediaType.startsWith("audio/") -> uploadAudioFile(file, mediaType)
+                mediaType.startsWith("video/") -> uploadVideoFile(file, samplingFps ?: 1, mediaType)
+                else -> uploadGenericFile(file, mediaType)
             }
             val uploadedAt = System.currentTimeMillis()
             val uploadedBinding = bindingWithId.copy(
@@ -289,7 +305,7 @@ class VideoRemoteFileResolver(
         }
     }
 
-    private suspend fun uploadVideoFile(file: File, samplingFps: Int): String {
+    private suspend fun uploadVideoFile(file: File, samplingFps: Int, mediaType: String = "video/mp4"): String {
         val uploadSamplingFps = samplingFps.coerceIn(1, 5)
         val response = retryRemoteCall {
             apiService.uploadFile(
@@ -303,7 +319,7 @@ class VideoRemoteFileResolver(
                 file = MultipartBody.Part.createFormData(
                     name = "file",
                     filename = file.name,
-                    body = file.asRequestBody("video/mp4".toMediaType())
+                    body = file.asRequestBody(mediaType.toMediaType())
                 )
             )
         }
@@ -325,6 +341,23 @@ class VideoRemoteFileResolver(
         }
         return response.resolvedId()
             ?: error("Audio file upload succeeded but file_id was missing.")
+    }
+
+    private suspend fun uploadGenericFile(file: File, mediaType: String): String {
+        val response = retryRemoteCall {
+            apiService.uploadFile(
+                authorization = bearerToken(),
+                purpose = "user_data".toRequestBody("text/plain".toMediaType()),
+                preprocessConfigs = emptyMap(),
+                file = MultipartBody.Part.createFormData(
+                    name = "file",
+                    filename = file.name,
+                    body = file.asRequestBody(mediaType.toMediaType())
+                )
+            )
+        }
+        return response.resolvedId()
+            ?: error("File upload succeeded but file_id was missing.")
     }
 
     private suspend fun <T> retryRemoteCall(block: suspend () -> T): T {

@@ -13,6 +13,15 @@ import fi.iki.elonen.NanoHTTPD
 import java.io.ByteArrayInputStream
 import kotlinx.coroutines.runBlocking
 
+internal fun resolveAllowedCorsOrigin(origin: String?, allowedOrigins: Set<String>): String? {
+    val normalizedOrigin = origin?.trim()
+        ?.takeIf { it.isNotBlank() && it != "*" }
+        ?: return null
+    return normalizedOrigin.takeIf { candidate ->
+        allowedOrigins.any { it.trim() == candidate }
+    }
+}
+
 /**
  * Embedded HTTP server exposing Watcher capabilities to LAN clients.
  */
@@ -33,10 +42,12 @@ internal class GatewayServer(
     private val onStreamHandoff: (() -> String?)? = null,
     private val onStreamReclaim: (() -> Unit)? = null,
     private val onStreamRelease: (() -> Unit)? = null,
-    private val humanGate: com.example.watcher.agentframework.gate.HumanGate? = null
+    private val humanGate: com.example.watcher.agentframework.gate.HumanGate? = null,
+    private val allowedCorsOrigins: Set<String> = emptySet()
 ) : NanoHTTPD(port) {
 
     private val baseUrl: String get() = "http://${localIpProvider()}:$listeningPort"
+    private val requestOrigin = ThreadLocal<String?>()
 
     companion object {
         private const val TAG = "GatewayServer"
@@ -44,48 +55,49 @@ internal class GatewayServer(
     }
 
     override fun serve(session: IHTTPSession): Response {
+        requestOrigin.set(session.headers["origin"] ?: session.headers["Origin"])
         val method = session.method
         val uri = session.uri.trimEnd('/')
-        Log.d(TAG, "$method $uri")
-        onRequestObserved?.invoke(method.name, uri)
+        return try {
+            Log.d(TAG, "$method $uri")
+            onRequestObserved?.invoke(method.name, uri)
 
-        if (method == Method.OPTIONS) {
-            return corsResponse(newFixedLengthResponse(Response.Status.OK, MIME_PLAINTEXT, ""))
-        }
+            if (method == Method.OPTIONS) {
+                return corsResponse(newFixedLengthResponse(Response.Status.OK, MIME_PLAINTEXT, ""))
+            }
 
-        if (uri == "/api/health" && method == Method.GET) {
-            return ok(
-                GatewayRoutes.health(
-                    hasFrame = frameProvider() != null,
-                    agentConfigured = agentService != null,
-                    commentaryConfigured = commentaryStateProvider != null &&
-                        commentaryEntriesProvider != null &&
-                        onCommentaryAsk != null,
-                    streamManagementConfigured = streamStatusProvider != null &&
-                        onStreamHandoff != null &&
-                        onStreamReclaim != null &&
-                        onStreamRelease != null,
-                    gateway = gatewayStatusProvider?.invoke()
-                )
-            )
-        }
-
-        if (uri == "/api/device/identity" && method == Method.GET) {
-            val manager = automationManager ?: return notImplemented("Automation manager not configured")
-            return ok(manager.deviceIdentity())
-        }
-
-        if (requiresApiAuthentication(uri) && apiKey.isNotBlank()) {
-            if (!isAuthorized(session, uri)) {
-                return error(
-                    status = Response.Status.UNAUTHORIZED,
-                    message = unauthorizedMessage(uri),
-                    errorCode = unauthorizedCode(uri)
+            if (uri == "/api/health" && method == Method.GET) {
+                return ok(
+                    GatewayRoutes.health(
+                        hasFrame = frameProvider() != null,
+                        agentConfigured = agentService != null,
+                        commentaryConfigured = commentaryStateProvider != null &&
+                            commentaryEntriesProvider != null &&
+                            onCommentaryAsk != null,
+                        streamManagementConfigured = streamStatusProvider != null &&
+                            onStreamHandoff != null &&
+                            onStreamReclaim != null &&
+                            onStreamRelease != null,
+                        gateway = gatewayStatusProvider?.invoke()
+                    )
                 )
             }
-        }
 
-        return try {
+            if (uri == "/api/device/identity" && method == Method.GET) {
+                val manager = automationManager ?: return notImplemented("Automation manager not configured")
+                return ok(manager.deviceIdentity())
+            }
+
+            if (requiresApiAuthentication(uri) && apiKey.isNotBlank()) {
+                if (!isAuthorized(session, uri)) {
+                    return error(
+                        status = Response.Status.UNAUTHORIZED,
+                        message = unauthorizedMessage(uri),
+                        errorCode = unauthorizedCode(uri)
+                    )
+                }
+            }
+
             route(method, uri, session)
         } catch (e: Exception) {
             Log.e(TAG, "Error handling $method $uri", e)
@@ -95,6 +107,8 @@ internal class GatewayServer(
                 errorCode = GatewayRoutes.ERROR_INTERNAL,
                 retryable = true
             )
+        } finally {
+            requestOrigin.remove()
         }
     }
 
@@ -108,21 +122,6 @@ internal class GatewayServer(
 
         method == Method.GET && uri.matches(Regex("/api/device/pair-requests/[^/]+")) ->
             getPairingRequest(uri)
-
-        method == Method.POST && uri == "/api/agent-relay/conversations" ->
-            registerRelayConversation(session)
-
-        method == Method.GET && uri == "/api/agent-relay/conversations" ->
-            listRelayConversations(session)
-
-        method == Method.GET && uri.matches(Regex("/api/agent-relay/conversations/[^/]+/messages")) ->
-            getRelayMessages(uri, session)
-
-        method == Method.POST && uri.matches(Regex("/api/agent-relay/conversations/[^/]+/messages")) ->
-            postRelayMessage(uri, session)
-
-        method == Method.POST && uri.matches(Regex("/api/agent-relay/conversations/[^/]+/seen")) ->
-            markRelayMessagesSeen(uri, session)
 
         method == Method.GET && uri == "/api/stream/snapshot" -> snapshotResponse()
 
@@ -289,75 +288,6 @@ internal class GatewayServer(
             "Pairing request not found: $requestId",
             details = mapOf("requestId" to requestId)
         )
-    }
-
-    private fun registerRelayConversation(session: IHTTPSession): Response {
-        val manager = automationManager ?: return notImplemented("Automation manager not configured")
-        val binding = relayBinding(session) ?: return relayTokenRequired()
-        val params = requireBodyMap(session) ?: return invalidBody()
-        return ok(
-            manager.registerRelayConversation(binding, params),
-            status = Response.Status.CREATED
-        )
-    }
-
-    private fun listRelayConversations(session: IHTTPSession): Response {
-        val manager = automationManager ?: return notImplemented("Automation manager not configured")
-        val binding = relayBinding(session) ?: return relayTokenRequired()
-        val conversations = manager.listRelayConversations(binding.bridgeId)
-        return ok(conversations, meta = GatewayMeta(count = conversations.size))
-    }
-
-    private fun getRelayMessages(uri: String, session: IHTTPSession): Response {
-        val manager = automationManager ?: return notImplemented("Automation manager not configured")
-        val binding = relayBinding(session) ?: return relayTokenRequired()
-        val conversationId = uri
-            .removePrefix("/api/agent-relay/conversations/")
-            .removeSuffix("/messages")
-        val afterMessageId = session.parms["afterMessageId"]?.toLongOrNull()
-        val messages = manager.listRelayMessages(
-            agentBridgeId = binding.bridgeId,
-            conversationId = conversationId,
-            afterMessageId = afterMessageId
-        ) ?: return notFound("Relay conversation not found: $conversationId", details = mapOf("conversationId" to conversationId))
-        val nextSince = messages.maxOfOrNull { it.id }
-        return ok(messages, meta = GatewayMeta(count = messages.size, nextSince = nextSince))
-    }
-
-    private fun postRelayMessage(uri: String, session: IHTTPSession): Response {
-        val manager = automationManager ?: return notImplemented("Automation manager not configured")
-        val binding = relayBinding(session) ?: return relayTokenRequired()
-        val params = requireBodyMap(session) ?: return invalidBody()
-        val content = params["content"]?.toString()?.trim().orEmpty()
-        if (content.isBlank()) return missingField("content")
-        val conversationId = uri
-            .removePrefix("/api/agent-relay/conversations/")
-            .removeSuffix("/messages")
-        val message = manager.appendRelayMessage(
-            agentBridgeId = binding.bridgeId,
-            conversationId = conversationId,
-            author = GatewayAutomationManager.RELAY_AUTHOR_PC_AGENT,
-            content = content
-        ) ?: return notFound("Relay conversation not found: $conversationId", details = mapOf("conversationId" to conversationId))
-        return ok(message, status = Response.Status.CREATED)
-    }
-
-    private fun markRelayMessagesSeen(uri: String, session: IHTTPSession): Response {
-        val manager = automationManager ?: return notImplemented("Automation manager not configured")
-        val binding = relayBinding(session) ?: return relayTokenRequired()
-        val params = requireBodyMap(session) ?: emptyMap()
-        val conversationId = uri
-            .removePrefix("/api/agent-relay/conversations/")
-            .removeSuffix("/seen")
-        val throughMessageId = (params["throughMessageId"] as? Number)?.toLong()
-            ?: params["throughMessageId"]?.toString()?.toLongOrNull()
-            ?: session.parms["throughMessageId"]?.toLongOrNull()
-        val result = manager.markRelayMessagesSeen(
-            agentBridgeId = binding.bridgeId,
-            conversationId = conversationId,
-            throughMessageId = throughMessageId
-        ) ?: return notFound("Relay conversation not found: $conversationId", details = mapOf("conversationId" to conversationId))
-        return ok(result)
     }
 
     private fun createTask(session: IHTTPSession): Response {
@@ -671,12 +601,6 @@ internal class GatewayServer(
         errorCode = GatewayRoutes.ERROR_CONFLICT
     )
 
-    private fun relayTokenRequired(): Response = error(
-        status = Response.Status.UNAUTHORIZED,
-        message = "Relay chat requires an approved binding token.",
-        errorCode = GatewayRoutes.ERROR_INVALID_TOKEN
-    )
-
     private fun error(
         status: Response.Status,
         message: String,
@@ -700,9 +624,12 @@ internal class GatewayServer(
     }
 
     private fun corsResponse(response: Response): Response {
-        response.addHeader("Access-Control-Allow-Origin", "*")
-        response.addHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-        response.addHeader("Access-Control-Allow-Headers", "Content-Type, X-API-Key, Authorization, X-Binding-Token")
+        resolveAllowedCorsOrigin(requestOrigin.get(), allowedCorsOrigins)?.let { origin ->
+            response.addHeader("Access-Control-Allow-Origin", origin)
+            response.addHeader("Vary", "Origin")
+            response.addHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+            response.addHeader("Access-Control-Allow-Headers", "Content-Type, X-API-Key, Authorization, X-Binding-Token")
+        }
         return response
     }
 
@@ -719,11 +646,6 @@ internal class GatewayServer(
         if (uri == "/api/device/pair") return false
         val manager = automationManager ?: return false
         return manager.isValidBindingToken(bindingTokenFromSession(session))
-    }
-
-    private fun relayBinding(session: IHTTPSession): GatewayPairingRecord? {
-        val manager = automationManager ?: return null
-        return manager.bindingForToken(bindingTokenFromSession(session))
     }
 
     private fun bindingTokenFromSession(session: IHTTPSession): String? {

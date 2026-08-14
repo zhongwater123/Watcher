@@ -347,6 +347,7 @@ class MonitorManager(
             lastResult = decision.result,
             lastSummary = decision.summary,
             lastReason = decision.reason,
+            lastRemark = decision.remark,
             lastConfidence = decision.confidence,
             totalCheckCount = current.totalCheckCount + 1,
             alertCount = current.alertCount + if (decision.result == CheckResult.ALERT) 1 else 0,
@@ -448,7 +449,7 @@ class MonitorManager(
             appendLine("你是一个视觉监控分类器。")
             appendLine("监控目标：${task.userRequirement}")
             appendLine("任务提示词：${task.promptTemplate}")
-            appendLine("只返回 JSON，字段为 status、summary、reason、confidence。")
+            appendLine("只返回 JSON，字段为 status、summary、reason、confidence、remark。")
             appendLine("status 只能是 ALERT、WARNING、NORMAL、UNKNOWN。")
             appendLine("summary 要简短明确。")
             appendLine("confidence 优先使用 0 到 1 之间的数字；如果无法量化，也可以使用“高”“中”“低”。")
@@ -487,8 +488,9 @@ class MonitorManager(
             appendLine("Task requirement: ${task.userRequirement}")
             appendLine("Mode: compare the current frame against the baseline scene image.")
             appendLine("Task prompt: ${task.promptTemplate}")
-            appendLine("Return JSON only with fields status, summary, reason, confidence.")
+            appendLine("Return JSON only with fields status, summary, reason, confidence, remark.")
             appendLine("status must be one of ALERT, WARNING, NORMAL, UNKNOWN.")
+            appendLine("remark must be a short cyber-poetic, dramatic one-liner for the user. It may be expressive, but must not contradict status, summary, or reason, and must not invent unsupported visual facts.")
             appendLine("Use ALERT or WARNING when the current scene clearly deviates from the baseline in a way that matters to the task.")
             appendLine("Use NORMAL when the current scene still matches the baseline scene.")
         }
@@ -507,8 +509,9 @@ class MonitorManager(
             appendLine("Mode: determine whether the target shown in the reference image is present in the current scene.")
             appendLine(triggerRule)
             appendLine("Task prompt: ${task.promptTemplate}")
-            appendLine("Return JSON only with fields status, summary, reason, confidence.")
+            appendLine("Return JSON only with fields status, summary, reason, confidence, remark.")
             appendLine("status must be one of ALERT, WARNING, NORMAL, UNKNOWN.")
+            appendLine("remark must be a short cyber-poetic, dramatic one-liner for the user. It may be expressive, but must not contradict status, summary, or reason, and must not invent unsupported visual facts.")
             appendLine("reason must focus on target appearance, absence, or partial match, not generic scene drift.")
         }
     }
@@ -539,7 +542,8 @@ class MonitorManager(
             failureCount = _monitorStatus.value.failureCount + 1,
             lastResult = CheckResult.UNKNOWN,
             lastSummary = "最近一次监控检查失败",
-            lastReason = message
+            lastReason = message,
+            lastRemark = ""
         )
         addLog(CheckResult.UNKNOWN, message, MonitorLogAction.ERROR, eventFramePath = eventFramePath)
     }

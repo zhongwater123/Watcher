@@ -12,6 +12,8 @@ room = "2.7.2"
 retrofit = "2.9.0"
 okhttp = "4.12.0"
 gson = "2.10.1"
+protobuf = "4.29.3"
+protobufPlugin = "0.9.4"
 ksp = "2.2.21-2.0.5"
 jcodec = "0.2.5"
 camerax = "1.4.1"
@@ -53,6 +55,7 @@ okhttp-logging = { group = "com.squareup.okhttp3", name = "logging-interceptor",
 
 # Gson
 gson = { group = "com.google.code.gson", name = "gson", version.ref = "gson" }
+protobuf-javalite = { group = "com.google.protobuf", name = "protobuf-javalite", version.ref = "protobuf" }
 jcodec-android = { group = "org.jcodec", name = "jcodec-android", version.ref = "jcodec" }
 
 # ViewModel Compose
@@ -85,3 +88,4 @@ android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
+protobuf = { id = "com.google.protobuf", version.ref = "protobufPlugin" }

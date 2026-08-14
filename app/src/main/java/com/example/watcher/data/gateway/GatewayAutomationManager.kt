@@ -66,7 +66,7 @@ internal class GatewayAutomationManager(
             deviceName = buildDeviceName(),
             serviceVersion = "1.3",
             protocolVersion = "2026-06-relay-v1",
-            capabilities = listOf("gateway", "automation", "agent", "stream", "commentary", "agent_relay")
+            capabilities = listOf("gateway", "automation", "agent", "stream", "commentary", "ntfy_relay")
         )
     }
 
@@ -654,6 +654,7 @@ internal fun evaluateDeskAbsenceRule(
         payload = mapOf(
             "summary" to status.lastSummary,
             "reason" to status.lastReason,
+            "remark" to status.lastRemark,
             "confidence" to status.lastConfidence,
             "totalChecks" to status.totalCheckCount
         ),

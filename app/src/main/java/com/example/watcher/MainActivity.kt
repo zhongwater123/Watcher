@@ -17,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.core.content.ContextCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import com.example.watcher.ui.components.StartupMainContentPolicy
 import com.example.watcher.ui.components.StartupVideoController
 import com.example.watcher.ui.screens.MainScreen
 import com.example.watcher.ui.theme.WatcherTheme
@@ -34,10 +35,18 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         Log.d("StartupVideo", "onCreate: after super")
 
-        val showMain = mutableStateOf(false)
+        videoController = StartupVideoController.createIfFirstLaunch(this)
+        val showMain = mutableStateOf(
+            StartupMainContentPolicy.shouldCreateMainContentBeforeReveal(
+                hasStartupVideoOverlay = videoController != null
+            )
+        )
         val allowSystemBars = mutableStateOf(false)
 
-        videoController = StartupVideoController.createIfFirstLaunch(this)
+        if (showMain.value) {
+            Log.d("StartupVideo", "onCreate: warming MainScreen behind startup video")
+        }
+
         videoController?.attach(
             window = window,
             onFadeStart = {
@@ -94,4 +103,3 @@ class MainActivity : ComponentActivity() {
         notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 }
-

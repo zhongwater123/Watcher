@@ -11,12 +11,16 @@ import com.example.watcher.data.repository.AsrConfigSource
 import com.example.watcher.data.repository.AsrConnectivitySnapshot
 import com.example.watcher.data.repository.AsrConnectivityStatus
 import com.example.watcher.data.repository.ArkConfig
+import com.example.watcher.data.repository.AstConfigRepository
 import com.example.watcher.data.repository.DEFAULT_DOUBAO_STREAMING_ASR_RESOURCE_ID
+import com.example.watcher.data.repository.DEFAULT_VOLCENGINE_AST_RESOURCE_ID
 import com.example.watcher.data.repository.LlmWalletRepository
 import com.example.watcher.data.repository.WalletShareManager
 import com.example.watcher.data.repository.ProviderConnectivitySnapshot
 import com.example.watcher.data.repository.ProviderConnectivityStatus
 import com.example.watcher.data.repository.VolcengineAsrCredentials
+import com.example.watcher.data.repository.VolcengineAstAuthMode
+import com.example.watcher.data.repository.VolcengineAstCredentials
 import com.example.watcher.data.repository.validateSecureEndpoint
 import com.example.watcher.BuildConfig
 import com.example.watcher.watcherApplication
@@ -60,6 +64,35 @@ data class AsrConfigUiState(
         get() = draft.toCredentials().isConfigured()
 }
 
+data class AstConfigDraft(
+    val authMode: VolcengineAstAuthMode = VolcengineAstAuthMode.ApiKey,
+    val apiKey: String = "",
+    val appKey: String = "",
+    val accessKey: String = "",
+    val resourceId: String = DEFAULT_VOLCENGINE_AST_RESOURCE_ID
+) {
+    internal fun toCredentials(): VolcengineAstCredentials {
+        return VolcengineAstCredentials(
+            authMode = authMode,
+            apiKey = apiKey.trim(),
+            appKey = appKey.trim(),
+            accessKey = accessKey.trim(),
+            resourceId = resourceId.trim().ifBlank { DEFAULT_VOLCENGINE_AST_RESOURCE_ID }
+        )
+    }
+}
+
+data class AstConfigUiState(
+    val draft: AstConfigDraft = AstConfigDraft(),
+    val source: AsrConfigSource = AsrConfigSource.Missing,
+    val connectivity: AsrConnectivitySnapshot = AsrConnectivitySnapshot(),
+    val isSaving: Boolean = false,
+    val isTesting: Boolean = false
+) {
+    val isConfigured: Boolean
+        get() = draft.toCredentials().isConfigured()
+}
+
 data class ApiWalletUiState(
     val isLoading: Boolean = true,
     val isSaving: Boolean = false,
@@ -70,6 +103,7 @@ data class ApiWalletUiState(
     val isEditing: Boolean = false,
     val draft: ApiWalletDraft = ApiWalletDraft(),
     val asrConfig: AsrConfigUiState = AsrConfigUiState(),
+    val astConfig: AstConfigUiState = AstConfigUiState(),
     val statusMessage: String? = null,
     val errorMessage: String? = null,
     val arkFallbackAvailable: Boolean = false,
@@ -85,6 +119,7 @@ class ApiWalletViewModel(application: Application) : AndroidViewModel(applicatio
     private val walletRepository: LlmWalletRepository =
         application.watcherApplication().agentFrameworkContainer.llmWalletRepository
     private val asrConfigRepository = AsrConfigRepository(application)
+    private val astConfigRepository = AstConfigRepository(application)
 
     private val _uiState = MutableStateFlow(
         ApiWalletUiState(arkFallbackAvailable = ArkConfig.apiKey.isNotBlank())
@@ -94,6 +129,7 @@ class ApiWalletViewModel(application: Application) : AndroidViewModel(applicatio
     init {
         observeProviders()
         syncAsrConfig()
+        syncAstConfig()
     }
 
     fun startCreate() {
@@ -136,6 +172,16 @@ class ApiWalletViewModel(application: Application) : AndroidViewModel(applicatio
         _uiState.value = _uiState.value.copy(
             asrConfig = _uiState.value.asrConfig.copy(
                 draft = transform(_uiState.value.asrConfig.draft)
+            ),
+            statusMessage = null,
+            errorMessage = null
+        )
+    }
+
+    fun updateAstDraft(transform: (AstConfigDraft) -> AstConfigDraft) {
+        _uiState.value = _uiState.value.copy(
+            astConfig = _uiState.value.astConfig.copy(
+                draft = transform(_uiState.value.astConfig.draft)
             ),
             statusMessage = null,
             errorMessage = null
@@ -548,6 +594,115 @@ class ApiWalletViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    fun saveAstDraft() {
+        val current = _uiState.value
+        val credentials = current.astConfig.draft.toCredentials()
+        if (!credentials.isConfigured()) {
+            _uiState.value = current.copy(errorMessage = "请填写完整的 AST 鉴权配置和 Resource ID。")
+            return
+        }
+
+        _uiState.value = current.copy(
+            astConfig = current.astConfig.copy(isSaving = true),
+            statusMessage = null,
+            errorMessage = null
+        )
+        viewModelScope.launch {
+            runCatching {
+                val previous = astConfigRepository.resolveConfig().credentials
+                astConfigRepository.saveCredentials(credentials)
+                if (previous != credentials) {
+                    astConfigRepository.clearConnectivitySnapshot()
+                }
+            }.onSuccess {
+                syncAstConfig(statusMessage = "AST 复杂语种配置已保存。")
+            }.onFailure { error ->
+                _uiState.value = _uiState.value.copy(
+                    astConfig = _uiState.value.astConfig.copy(isSaving = false),
+                    errorMessage = error.message ?: "保存 AST 配置失败。"
+                )
+            }
+        }
+    }
+
+    fun clearAstConfig() {
+        val current = _uiState.value
+        _uiState.value = current.copy(
+            astConfig = current.astConfig.copy(isSaving = true),
+            statusMessage = null,
+            errorMessage = null
+        )
+        viewModelScope.launch {
+            runCatching {
+                astConfigRepository.clearCredentials()
+                astConfigRepository.clearConnectivitySnapshot()
+            }.onSuccess {
+                syncAstConfig(statusMessage = "AST 配置已清空。")
+            }.onFailure { error ->
+                _uiState.value = _uiState.value.copy(
+                    astConfig = _uiState.value.astConfig.copy(isSaving = false),
+                    errorMessage = error.message ?: "清空 AST 配置失败。"
+                )
+            }
+        }
+    }
+
+    fun testAstConfig() {
+        val current = _uiState.value
+        val credentials = current.astConfig.draft.toCredentials()
+        if (!credentials.isConfigured()) {
+            _uiState.value = current.copy(errorMessage = "请先填写完整的 AST 鉴权配置和 Resource ID。")
+            return
+        }
+
+        _uiState.value = current.copy(
+            astConfig = current.astConfig.copy(isTesting = true),
+            statusMessage = null,
+            errorMessage = null
+        )
+        viewModelScope.launch {
+            runCatching {
+                astConfigRepository.testCredentials(credentials)
+            }.onSuccess { message ->
+                val snapshot = AsrConnectivitySnapshot(
+                    status = AsrConnectivityStatus.Verified,
+                    lastTestedAt = System.currentTimeMillis(),
+                    message = message
+                )
+                astConfigRepository.setConnectivitySnapshot(
+                    status = snapshot.status,
+                    message = snapshot.message,
+                    testedAt = snapshot.lastTestedAt ?: System.currentTimeMillis()
+                )
+                _uiState.value = _uiState.value.copy(
+                    astConfig = _uiState.value.astConfig.copy(
+                        isTesting = false,
+                        connectivity = snapshot
+                    ),
+                    statusMessage = "AST 会话初始化验证成功。"
+                )
+            }.onFailure { error ->
+                val snapshot = AsrConnectivitySnapshot(
+                    status = AsrConnectivityStatus.Failed,
+                    lastTestedAt = System.currentTimeMillis(),
+                    message = error.message ?: "连接失败。"
+                )
+                astConfigRepository.setConnectivitySnapshot(
+                    status = snapshot.status,
+                    message = snapshot.message,
+                    testedAt = snapshot.lastTestedAt ?: System.currentTimeMillis()
+                )
+                _uiState.value = _uiState.value.copy(
+                    astConfig = _uiState.value.astConfig.copy(
+                        isTesting = false,
+                        connectivity = snapshot
+                    ),
+                    errorMessage = error.message ?: "AST 连接测试失败。"
+                )
+            }
+        }
+    }
+
     private fun observeProviders() {
         viewModelScope.launch {
             walletRepository.observeProviders().collect { providers ->
@@ -575,6 +730,24 @@ class ApiWalletViewModel(application: Application) : AndroidViewModel(applicatio
         val resolved = asrConfigRepository.resolveConfig(resolveBuildConfigFallback())
         _uiState.value = _uiState.value.copy(
             asrConfig = _uiState.value.asrConfig.copy(
+                draft = resolved.credentials.toDraft(),
+                source = resolved.source,
+                connectivity = resolved.connectivity,
+                isSaving = false,
+                isTesting = false
+            ),
+            statusMessage = statusMessage,
+            errorMessage = errorMessage
+        )
+    }
+
+    private fun syncAstConfig(
+        statusMessage: String? = null,
+        errorMessage: String? = null
+    ) {
+        val resolved = astConfigRepository.resolveConfig()
+        _uiState.value = _uiState.value.copy(
+            astConfig = _uiState.value.astConfig.copy(
                 draft = resolved.credentials.toDraft(),
                 source = resolved.source,
                 connectivity = resolved.connectivity,
@@ -633,5 +806,15 @@ private fun VolcengineAsrCredentials.toDraft(): AsrConfigDraft {
         appKey = appKey,
         accessKey = accessKey,
         resourceId = resourceId.ifBlank { DEFAULT_DOUBAO_STREAMING_ASR_RESOURCE_ID }
+    )
+}
+
+private fun VolcengineAstCredentials.toDraft(): AstConfigDraft {
+    return AstConfigDraft(
+        authMode = authMode,
+        apiKey = apiKey,
+        appKey = appKey,
+        accessKey = accessKey,
+        resourceId = resourceId.ifBlank { DEFAULT_VOLCENGINE_AST_RESOURCE_ID }
     )
 }

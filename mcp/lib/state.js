@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import {
   ensureStateDir,
-  DEVICES_FILE
+  DEVICES_FILE,
+  RELAY_CONFIG_FILE
 } from "./paths.js";
 
 function readJson(filePath, fallback) {
@@ -27,4 +28,12 @@ export function loadDevices() {
 
 export function saveDevices(devices) {
   writeJson(DEVICES_FILE, devices);
+}
+
+export function loadRelayConfig() {
+  return readJson(RELAY_CONFIG_FILE, {});
+}
+
+export function saveRelayConfig(config) {
+  writeJson(RELAY_CONFIG_FILE, config);
 }

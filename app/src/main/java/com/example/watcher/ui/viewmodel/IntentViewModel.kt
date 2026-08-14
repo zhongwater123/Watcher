@@ -19,10 +19,14 @@ import com.example.watcher.data.model.DiscoveredStreamDevice
 import com.example.watcher.data.model.DiscoveredStreamDeviceKind
 import com.example.watcher.data.model.StreamScanUiState
 import com.example.watcher.data.model.TimelineEventEntity
+import com.example.watcher.data.model.ClassroomInlineQuestionType
+import com.example.watcher.data.model.ClassroomRecordingInput
+import com.example.watcher.data.model.ClassroomSpeechRecognitionConfig
 import com.example.watcher.data.model.VideoProcessTask
 import com.example.watcher.data.model.VideoProcessTaskDraft
 import com.example.watcher.data.model.VideoProcessingStatus
 import com.example.watcher.data.model.VideoStreamSettings
+import com.example.watcher.data.model.VideoHistoryDetail
 import com.example.watcher.data.model.MonitorTaskTemplates
 import com.example.watcher.data.model.MonitorTemplateEntity
 import com.example.watcher.data.model.VideoTaskTemplates
@@ -64,6 +68,7 @@ import com.example.watcher.data.model.LlmProviderEntity
 import com.example.watcher.data.repository.AiAudienceManager
 import com.example.watcher.data.repository.LiveSpeechRecognitionManager
 import com.example.watcher.data.remote.ArkStreamingClient
+import com.example.watcher.data.council.agent.CouncilAgentFeatureContainer
 import com.example.watcher.data.repository.LiveCommentaryRepository
 import com.example.watcher.data.repository.VideoProcessRepository
 import com.example.watcher.data.repository.agent.AgentAudienceManager
@@ -81,7 +86,7 @@ import kotlinx.coroutines.launch
 class IntentViewModel(application: Application) : AndroidViewModel(application) {
     private val appContext = getApplication<Application>()
     private val database = AppDatabase.getDatabase(application)
-    private val llmWalletRepository = appContext.watcherApplication().agentFrameworkContainer.llmWalletRepository
+    private val llmWalletRepository = appContext.watcherApplication().llmWalletRepository
     private val repository = IntentRepository(
         apiService = RetrofitClient.doubaoApiService,
         taskDao = database.monitorTaskDao(),
@@ -106,13 +111,18 @@ class IntentViewModel(application: Application) : AndroidViewModel(application) 
         memoryManager = liveCommentaryRepository.memoryManager,
         sceneMemoryManager = liveCommentaryRepository.sceneMemoryManager
     )
+    private val councilAgentFeatureContainer = CouncilAgentFeatureContainer(
+        knowledgeDao = database.councilKnowledgeDao(),
+        sceneMemoryManager = liveCommentaryRepository.sceneMemoryManager
+    )
     private val councilManager = CouncilManager(
         llmWalletRepository = llmWalletRepository,
         councilExpertDao = database.councilExpertDao(),
         knowledgeDao = database.councilKnowledgeDao(),
         messageDao = database.aiAudienceMessageDao(),
         memoryManager = liveCommentaryRepository.memoryManager,
-        sceneMemoryManager = liveCommentaryRepository.sceneMemoryManager
+        sceneMemoryManager = liveCommentaryRepository.sceneMemoryManager,
+        expertAgentEngine = councilAgentFeatureContainer.expertAgentEngine
     )
     private val audienceTypeCache = MutableStateFlow<Map<Long, AudienceEngineType>>(emptyMap())
     private val liveSpeechManager = LiveSpeechRecognitionManager(
@@ -120,6 +130,7 @@ class IntentViewModel(application: Application) : AndroidViewModel(application) 
         memoryManager = liveCommentaryRepository.memoryManager
     )
     private val videoRepository = VideoProcessRepository(
+        appContext = appContext,
         apiService = RetrofitClient.doubaoApiService,
         taskDao = database.videoProcessTaskDao(),
         runDao = database.videoProcessRunDao(),
@@ -127,10 +138,14 @@ class IntentViewModel(application: Application) : AndroidViewModel(application) 
         audioAssetDao = database.videoAudioAssetDao(),
         remoteFileBindingDao = database.videoRemoteFileBindingDao(),
         speechTranscriptDao = database.videoSpeechTranscriptDao(),
+        classroomTranscriptConsumptionDao = database.classroomTranscriptConsumptionDao(),
+        classroomNoteFollowupDao = database.classroomNoteFollowupDao(),
         timelineEventDao = database.timelineEventDao(),
+        aiTraceDao = database.videoAiTraceDao(),
         llmWalletRepository = llmWalletRepository
     )
     private val historyRepository = HistoryRepository(
+        appContext = appContext,
         monitorRunDao = database.monitorRunDao(),
         monitorEventDao = database.monitorEventDao(),
         monitorMediaDao = database.monitorMediaDao(),
@@ -141,6 +156,7 @@ class IntentViewModel(application: Application) : AndroidViewModel(application) 
         videoAudioAssetDao = database.videoAudioAssetDao(),
         videoRemoteFileBindingDao = database.videoRemoteFileBindingDao(),
         videoSpeechTranscriptDao = database.videoSpeechTranscriptDao(),
+        classroomNoteFollowupDao = database.classroomNoteFollowupDao(),
         timelineEventDao = database.timelineEventDao()
     )
     private val migrationPreferences = appContext.getSharedPreferences(
@@ -177,10 +193,13 @@ class IntentViewModel(application: Application) : AndroidViewModel(application) 
     val settingsNotice: StateFlow<String?> get() = deviceDelegate.settingsNotice
     val selectedHistoryRecord: StateFlow<HistoryRecordSelection?> get() = historyDelegate.selectedHistoryRecord
     val selectedHistoryDetail: StateFlow<HistoryRecordDetail?> get() = historyDelegate.selectedHistoryDetail
+    val activeVideoHistoryReportDetail: StateFlow<VideoHistoryDetail?> get() =
+        historyDelegate.activeVideoHistoryReportDetail
 
     val tasksFlow = repository.observeTasks()
     val videoTasksFlow = videoRepository.observeTasks()
     val recentVideoRunsFlow = videoRepository.observeRecentRuns()
+    val recentClassroomRunsFlow = videoRepository.observeRecentClassroomRuns()
     val historyRecordsFlow = historyRepository.observeHistoryRecords()
     val storageSummaryFlow = historyRepository.observeStorageSummary()
     val videoStreamSettings = database.videoStreamSettingsDao().getSettings()
@@ -226,7 +245,8 @@ class IntentViewModel(application: Application) : AndroidViewModel(application) 
         scope = viewModelScope,
         appContext = appContext,
         videoRepository = videoRepository,
-        latestFrameProvider = { monitorManager.currentFrame.value }
+        latestFrameProvider = { monitorManager.currentFrame.value },
+        latestFrameSourceProvider = { _currentStreamSource.value.toClassroomFrameSourceId() }
     )
     private val historyTemplateConverter = HistoryTemplateConverter(
         monitorTaskDao = database.monitorTaskDao(),
@@ -293,6 +313,7 @@ class IntentViewModel(application: Application) : AndroidViewModel(application) 
     val videoPlanUiState: StateFlow<VideoPlanUiState> get() = videoWorkflow.videoPlanUiState
     val currentVideoTask: StateFlow<VideoProcessTaskDraft?> get() = videoWorkflow.currentVideoTask
     val videoProcessingStatus: StateFlow<VideoProcessingStatus> get() = videoWorkflow.videoProcessingStatus
+    val classroomRecordingInput: StateFlow<ClassroomRecordingInput> get() = videoWorkflow.classroomRecordingInput
     val selectedVideoRunId: StateFlow<Long?> get() = videoWorkflow.selectedVideoRunId
     val selectedVideoRunEvents: StateFlow<List<TimelineEventEntity>> get() = videoWorkflow.selectedVideoRunEvents
     val appUpdatePrompt: StateFlow<AppUpdatePrompt?> get() = monitorWorkflow.appUpdatePrompt
@@ -311,9 +332,12 @@ class IntentViewModel(application: Application) : AndroidViewModel(application) 
     fun loadTask(task: MonitorTask) = monitorWorkflow.loadTask(task)
     fun loadVideoTask(task: VideoProcessTask) = videoWorkflow.loadVideoTask(task)
     fun saveCurrentTask(result: IntentResult) = monitorWorkflow.saveCurrentTask(result)
+    fun saveAndStartConciseMonitoring(result: IntentResult): Boolean =
+        monitorWorkflow.saveAndStartConciseMonitoring(result)
     fun saveVideoTask(draft: VideoProcessTaskDraft) = videoWorkflow.saveVideoTask(draft)
     fun refreshBaselineFromCurrentFrame() = monitorWorkflow.refreshBaselineFromCurrentFrame()
     fun setBaselineFromPickedImage(uri: Uri) = monitorWorkflow.setBaselineFromPickedImage(uri)
+    fun clearPendingMonitorBaselineImage() = monitorWorkflow.clearPendingBaselineImage()
 
     fun applyMonitorTemplate(templateId: String) {
         viewModelScope.launch {
@@ -383,7 +407,29 @@ class IntentViewModel(application: Application) : AndroidViewModel(application) 
     ) = videoWorkflow.startVideoProcessing(task = task, streamingOutputEnabled = streamingOutputEnabled)
 
     fun stopVideoProcessing() = videoWorkflow.stopVideoProcessing()
+    fun resetClassroomRecording() = videoWorkflow.resetClassroomRecording()
+    fun startClassroomRecording(
+        courseName: String,
+        durationSeconds: Int,
+        speechRecognitionConfig: ClassroomSpeechRecognitionConfig = ClassroomSpeechRecognitionConfig.Default,
+        recordingInput: ClassroomRecordingInput? = null
+    ) = videoWorkflow.startClassroomRecording(courseName, durationSeconds, speechRecognitionConfig, recordingInput)
+    fun selectClassroomTestVideo(uri: Uri) = videoWorkflow.selectClassroomTestVideo(uri)
+    fun clearClassroomTestVideo() = videoWorkflow.clearClassroomTestVideo()
+    fun cleanupClassroomTestVideoCache() = videoWorkflow.cleanupClassroomTestVideoCache()
     fun selectVideoRun(runId: Long?) = videoWorkflow.selectVideoRun(runId)
+    fun openClassroomRecordingRun(runId: Long) = videoWorkflow.openClassroomRecordingRun(runId)
+    fun toggleClassroomTranscriptSelection(transcriptId: Long) =
+        videoWorkflow.toggleClassroomTranscriptSelection(transcriptId)
+    fun answerClassroomInlineQuestion(questionType: ClassroomInlineQuestionType) =
+        videoWorkflow.answerClassroomInlineQuestion(questionType)
+    fun dismissClassroomInlineQuestion() = videoWorkflow.dismissClassroomInlineQuestion()
+    fun askClassroomNoteFollowup(question: String) = videoWorkflow.askClassroomNoteFollowup(question)
+    fun retryClassroomNoteFollowup(followupId: Long) = videoWorkflow.retryClassroomNoteFollowup(followupId)
+    fun regenerateClassroomNoteFollowupWithFinalNote(followupId: Long) =
+        videoWorkflow.regenerateClassroomNoteFollowupWithFinalNote(followupId)
+    fun deleteClassroomNoteFollowup(followupId: Long) = videoWorkflow.deleteClassroomNoteFollowup(followupId)
+    fun attachClassroomNoteMaterials(uris: List<android.net.Uri>) = videoWorkflow.attachClassroomNoteMaterials(uris)
     fun launchVideoProcessing(
         task: VideoProcessTaskDraft? = currentVideoTask.value,
         streamingOutputEnabled: Boolean = false
@@ -391,6 +437,10 @@ class IntentViewModel(application: Application) : AndroidViewModel(application) 
 
     // ── History delegation ──────────────────────────────────────
     fun selectHistoryRecord(selection: HistoryRecordSelection?) = historyDelegate.selectHistoryRecord(selection)
+    fun openVideoHistoryReport(selection: HistoryRecordSelection) = historyDelegate.openVideoHistoryReport(selection)
+    fun closeVideoHistoryReport() = historyDelegate.closeVideoHistoryReport()
+    fun loadFullHistoryDetail(selection: HistoryRecordSelection, onResult: (HistoryRecordDetail?) -> Unit) =
+        historyDelegate.loadFullHistoryDetail(selection, onResult)
     fun deleteHistoryRecord(selection: HistoryRecordSelection) = historyDelegate.deleteHistoryRecord(selection)
     fun saveHistoryAsTemplate(detail: HistoryRecordDetail, onResult: (Boolean, String) -> Unit) =
         historyDelegate.saveAsTemplate(detail, onResult)
@@ -601,4 +651,11 @@ class IntentViewModel(application: Application) : AndroidViewModel(application) 
             }
         }
     }
+}
+
+private fun StreamSource.toClassroomFrameSourceId(): String = when (this) {
+    StreamSource.RemoteMjpeg -> "remote_mjpeg"
+    StreamSource.FrontCameraFallback -> "phone_front_camera_fallback"
+    StreamSource.BackCameraFallback -> "phone_back_camera_fallback"
+    StreamSource.None -> "none"
 }

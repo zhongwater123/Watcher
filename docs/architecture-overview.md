@@ -273,9 +273,18 @@ This subsystem makes the app usable as a local network service, not only as a ha
 
 The repository root also contains `mcp/`, a zero-build desktop MCP companion that discovers Watcher devices over LAN and exposes the gateway as generic tools for external agents.
 
-### Agent Runtime
+### Agent Runtimes
 
-Watcher includes a separate `agentframework` package and app-facing agent helpers under `data/agent`.
+Watcher has three intentionally independent Agent code paths:
+
+- `agentframework`: the reusable formal runtime used by gateway and framework services.
+- `data/council/agent`: the Council-owned expert runtime, tools, session memory, and orchestration.
+- `data/fitness/agent`: fitness planning Agents and the isolated legacy visual-feedback analyzer.
+
+The two business Agent domains do not inherit from, run through, or import `agentframework`. They may
+receive the same application-level `LlmWalletRepository` or provider implementations through explicit
+constructor injection, but they do not reference each other. The former ambiguous `data/agent` root no
+longer exists.
 
 Key layers:
 
@@ -328,12 +337,16 @@ com.example.watcher
 │  ├─ service
 │  └─ tools
 ├─ data
-│  ├─ agent
+│  ├─ council
+│  │  └─ agent
+│  ├─ fitness
+│  │  └─ agent
 │  ├─ gateway
 │  ├─ local
 │  ├─ model
 │  ├─ remote
-│  └─ repository
+│  ├─ repository
+│  └─ training
 └─ ui
    ├─ components
    ├─ screens

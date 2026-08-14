@@ -18,31 +18,82 @@ import java.io.IOException
 internal class VideoEvidenceChunkAnalyzer(
     private val apiService: DoubaoApiService,
     private val videoModel: String,
-    private val apiKey: String
+    private val apiKey: String,
+    private val traceLogger: VideoAiTraceLogger
 ) {
 
     suspend fun analyze(
         fileId: String,
         task: VideoProcessTaskDraft,
         chunkIndex: Int,
-        chunkCount: Int
+        chunkCount: Int,
+        traceId: String,
+        runId: Long
     ): String {
+        val context = VideoAiTraceContext(
+            traceId = traceId,
+            runId = runId,
+            taskId = task.taskId,
+            node = "VideoEvidenceChunkAnalyzer",
+            chunkIndex = chunkIndex,
+            model = videoModel,
+            requestKind = "merged_video_chunk"
+        )
+        val startedAt = System.currentTimeMillis()
+        val prompt = buildPrompt(task = task, chunkIndex = chunkIndex, chunkCount = chunkCount)
         val contentItems = listOf(
             VideoContentItem(type = "input_video", fileId = fileId),
             VideoContentItem(
                 type = "input_text",
-                text = buildPrompt(task = task, chunkIndex = chunkIndex, chunkCount = chunkCount)
+                text = prompt
             )
         )
         val request = DoubaoVideoRequest(
             model = videoModel,
             input = listOf(VideoMessage(role = "user", content = contentItems))
         )
-        return retryRemoteCall {
-            apiService.analyzeVideo(
-                authorization = bearerToken(),
-                request = request
-            ).requireOutputText("merged video chunk evidence")
+        return try {
+            traceLogger.beginNode(
+                context,
+                aiTracePayload(
+                    "fileId" to fileId,
+                    "chunkIndex" to chunkIndex,
+                    "chunkCount" to chunkCount
+                )
+            )
+            traceLogger.logPrompt(context, basePrompt = prompt, renderedPrompt = prompt)
+            traceLogger.logRequest(
+                context,
+                aiTracePayload(
+                    "model" to request.model,
+                    "fileId" to fileId,
+                    "promptLength" to prompt.length
+                )
+            )
+            val rawText = retryRemoteCall {
+                apiService.analyzeVideo(
+                    authorization = bearerToken(),
+                    request = request
+                ).requireOutputText("merged video chunk evidence")
+            }
+            val durationMs = System.currentTimeMillis() - startedAt
+            traceLogger.logResponse(context, rawText, durationMs)
+            val parsed = ModelOutputParser.parseVideoAnalysis(rawText)
+            traceLogger.logParsed(
+                context = context,
+                parsedSummary = parsed.summary,
+                parsedJson = aiTracePayload(
+                    "parseStatus" to "success",
+                    "summary" to parsed.summary,
+                    "evidenceLength" to parsed.evidenceJson.length
+                ),
+                parseStatus = "success"
+            )
+            traceLogger.finishNode(context, durationMs)
+            rawText
+        } catch (error: Throwable) {
+            traceLogger.logError(context, error, System.currentTimeMillis() - startedAt)
+            throw error
         }
     }
 

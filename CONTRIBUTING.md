@@ -43,7 +43,9 @@ Build commands:
 High-level structure:
 
 - `app/src/main/java/com/example/watcher/agentframework`
-- `app/src/main/java/com/example/watcher/data/agent`
+- `app/src/main/java/com/example/watcher/data/council/agent`
+- `app/src/main/java/com/example/watcher/data/fitness/agent`
+- `app/src/main/java/com/example/watcher/data/training/fitness`
 - `app/src/main/java/com/example/watcher/data/gateway`
 - `app/src/main/java/com/example/watcher/data/local`
 - `app/src/main/java/com/example/watcher/data/model`

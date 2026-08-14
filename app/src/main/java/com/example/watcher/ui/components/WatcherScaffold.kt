@@ -4,6 +4,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -22,6 +23,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -45,10 +47,10 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
@@ -62,8 +64,8 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
@@ -95,6 +97,8 @@ import kotlin.math.sin
 internal fun PageScaffold(
     page: HubPage,
     pageOffset: Float,
+    scrollState: ScrollState = rememberScrollState(),
+    verticalSpacing: Dp = 20.dp,
     content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit
 ) {
     val focus = pageFocus(pageOffset)
@@ -120,9 +124,9 @@ internal fun PageScaffold(
                 .fillMaxSize()
                 .statusBarsPadding()
                 .navigationBarsPadding()
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(scrollState)
                 .padding(start = 20.dp, top = 16.dp, end = 20.dp, bottom = 112.dp),
-            verticalArrangement = Arrangement.spacedBy(20.dp),
+            verticalArrangement = Arrangement.spacedBy(verticalSpacing),
             content = content
         )
     }
@@ -188,9 +192,11 @@ internal fun WatcherTopBar(
     onConciseModeChange: ((Boolean) -> Unit)? = null,
     rotaryRotationDegrees: Float,
     onRotaryRotationChange: (Float) -> Unit,
-    onOpenSettings: () -> Unit,
+    onOpenSettings: (() -> Unit)? = null,
     onOpenAgentConfig: (() -> Unit)? = null,
-    onOpenWalletConfig: (() -> Unit)? = null
+    onOpenWalletConfig: (() -> Unit)? = null,
+    onRotaryTap: (() -> Unit)? = null,
+    onRotaryLongPress: (() -> Unit)? = null
 ) {
     val extendedColors = LocalWatcherExtendedColors.current
     val accent = blendedPageAccent(selectionPosition(currentPage, pageOffset))
@@ -214,13 +220,15 @@ internal fun WatcherTopBar(
                     )
                 )
             }
-            add(
-                RotaryActionItem(
-                    icon = Icons.Default.Settings,
-                    contentDescription = "Open settings",
-                    onClick = onOpenSettings
+            if (onOpenSettings != null) {
+                add(
+                    RotaryActionItem(
+                        icon = Icons.Default.Settings,
+                        contentDescription = "Open settings",
+                        onClick = onOpenSettings
+                    )
                 )
-            )
+            }
         }
     }
 
@@ -273,7 +281,9 @@ internal fun WatcherTopBar(
                 accent = accent,
                 glassOverlay = extendedColors.glassOverlay,
                 rotationDegrees = rotaryRotationDegrees,
-                onRotationChange = onRotaryRotationChange
+                onRotationChange = onRotaryRotationChange,
+                onTap = onRotaryTap,
+                onLongPress = onRotaryLongPress
             )
         }
     }
@@ -290,7 +300,7 @@ internal fun ConciseModeToggleChip(
     val interactionSource = remember { MutableInteractionSource() }
     val backgroundColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.24f)
     val pillColor = Color.White.copy(alpha = 0.88f)
-    val trackBlurTint = Color.White.copy(alpha = 0.34f)
+    val trackTint = Color.White.copy(alpha = 0.18f)
     val frostedOverlay = Color.White.copy(alpha = 0.16f)
     val sliderOffset by animateDpAsState(
         targetValue = if (isConciseMode) 78.dp else 0.dp,
@@ -318,17 +328,6 @@ internal fun ConciseModeToggleChip(
         animationSpec = tween(durationMillis = 180),
         label = "conciseModeColor"
     )
-    val exploreBlur by animateDpAsState(
-        targetValue = if (isConciseMode) 1.6.dp else 0.dp,
-        animationSpec = tween(durationMillis = 220),
-        label = "conciseModeExploreBlur"
-    )
-    val conciseBlur by animateDpAsState(
-        targetValue = if (isConciseMode) 0.dp else 1.6.dp,
-        animationSpec = tween(durationMillis = 220),
-        label = "conciseModeBlur"
-    )
-
     Surface(
         shape = RoundedCornerShape(999.dp),
         color = backgroundColor,
@@ -353,8 +352,7 @@ internal fun ConciseModeToggleChip(
                 modifier = Modifier
                     .matchParentSize()
                     .clip(RoundedCornerShape(999.dp))
-                    .background(trackBlurTint)
-                    .blur(28.dp)
+                    .background(trackTint)
             )
             Box(
                 modifier = Modifier
@@ -386,7 +384,6 @@ internal fun ConciseModeToggleChip(
                 ) {
                     Text(
                         text = "探索",
-                        modifier = Modifier.blur(exploreBlur),
                         style = MaterialTheme.typography.labelLarge,
                         color = exploreColor
                     )
@@ -399,7 +396,6 @@ internal fun ConciseModeToggleChip(
                 ) {
                     Text(
                         text = "简洁",
-                        modifier = Modifier.blur(conciseBlur),
                         style = MaterialTheme.typography.labelLarge,
                         color = conciseColor
                     )
@@ -559,9 +555,11 @@ internal fun RotaryActionCluster(
     glassOverlay: Color,
     rotationDegrees: Float,
     onRotationChange: (Float) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onTap: (() -> Unit)? = null,
+    onLongPress: (() -> Unit)? = null
 ) {
-    if (items.isEmpty()) return
+    val freeRotation = items.isEmpty()
 
     val clusterSize = 148.dp
     val dialSize = 138.dp
@@ -570,17 +568,24 @@ internal fun RotaryActionCluster(
     val density = LocalDensity.current
     val view = LocalView.current
     val coroutineScope = rememberCoroutineScope()
-    val latestRotationDegrees by rememberUpdatedState(rotationDegrees)
     val latestOnRotationChange by rememberUpdatedState(onRotationChange)
     val latestItems by rememberUpdatedState(items)
+    var localRotationDegrees by remember { mutableFloatStateOf(rotationDegrees) }
     var previousTouchAngle by remember { mutableStateOf<Float?>(null) }
     var previousDragTimestampMillis by remember { mutableStateOf<Long?>(null) }
     var angularVelocity by remember { mutableFloatStateOf(0f) }
     var inertiaJob by remember { mutableStateOf<Job?>(null) }
-    var lastHapticStep by remember { mutableIntStateOf(rotationDegrees.toHapticStep()) }
+    var isRotaryActive by remember { mutableStateOf(false) }
+    var lastHapticStep by remember { mutableIntStateOf(localRotationDegrees.toHapticStep()) }
 
-    LaunchedEffect(rotationDegrees) {
-        val currentStep = rotationDegrees.toHapticStep()
+    LaunchedEffect(rotationDegrees, isRotaryActive) {
+        if (!isRotaryActive) {
+            localRotationDegrees = rotationDegrees
+        }
+    }
+
+    LaunchedEffect(localRotationDegrees) {
+        val currentStep = localRotationDegrees.toHapticStep()
         if (currentStep != lastHapticStep) {
             ViewCompat.performHapticFeedback(
                 view,
@@ -597,11 +602,22 @@ internal fun RotaryActionCluster(
     Box(
         modifier = modifier
             .size(clusterSize)
-            .pointerInput(items.size) {
+            .then(
+                if (onTap != null || onLongPress != null) {
+                    Modifier.pointerInput(onTap, onLongPress) {
+                        detectTapGestures(
+                            onTap = if (onTap != null) { { onTap() } } else null,
+                            onLongPress = if (onLongPress != null) { { onLongPress() } } else null
+                        )
+                    }
+                } else Modifier
+            )
+            .pointerInput(items.size, freeRotation) {
                 detectDragGestures(
                     onDragStart = { startOffset ->
                         inertiaJob?.cancel()
                         inertiaJob = null
+                        isRotaryActive = true
                         previousTouchAngle = startOffset.toAngleAround(size.centerOffset())
                         previousDragTimestampMillis = null
                         angularVelocity = 0f
@@ -609,27 +625,67 @@ internal fun RotaryActionCluster(
                     onDragCancel = {
                         previousTouchAngle = null
                         previousDragTimestampMillis = null
-                        inertiaJob?.cancel()
-                        inertiaJob = coroutineScope.launch {
-                            settleRotarySelection(
-                                rotationDegrees = latestRotationDegrees,
-                                items = latestItems,
-                                onRotationChange = latestOnRotationChange
-                            )
+                        if (!freeRotation) {
+                            inertiaJob?.cancel()
+                            inertiaJob = coroutineScope.launch {
+                                settleRotarySelection(
+                                    rotationDegrees = localRotationDegrees,
+                                    items = latestItems,
+                                    onRotationChange = { localRotationDegrees = it }
+                                )
+                                latestOnRotationChange(localRotationDegrees)
+                                isRotaryActive = false
+                            }
+                        } else {
+                            latestOnRotationChange(localRotationDegrees)
+                            isRotaryActive = false
                         }
                     },
                     onDragEnd = {
                         previousTouchAngle = null
                         previousDragTimestampMillis = null
                         val initialVelocity = angularVelocity
+                        if (freeRotation) {
+                            // Free rotation: just apply inertia, no snap
+                            if (abs(initialVelocity) >= 16f) {
+                                inertiaJob?.cancel()
+                                inertiaJob = coroutineScope.launch {
+                                    var velocity = initialVelocity
+                                    var previousFrameNanos = 0L
+                                    while (abs(velocity) > 4f) {
+                                        withFrameNanos { frameTimeNanos ->
+                                            if (previousFrameNanos == 0L) {
+                                                previousFrameNanos = frameTimeNanos
+                                                return@withFrameNanos
+                                            }
+                                            val deltaSeconds =
+                                                (frameTimeNanos - previousFrameNanos) / 1_000_000_000f
+                                            previousFrameNanos = frameTimeNanos
+                                            localRotationDegrees += velocity * deltaSeconds
+                                            val frameDamping = 0.92f.pow(deltaSeconds * 60f)
+                                            velocity *= frameDamping
+                                        }
+                                    }
+                                    angularVelocity = 0f
+                                    latestOnRotationChange(localRotationDegrees)
+                                    isRotaryActive = false
+                                }
+                            } else {
+                                latestOnRotationChange(localRotationDegrees)
+                                isRotaryActive = false
+                            }
+                            return@detectDragGestures
+                        }
                         if (abs(initialVelocity) < 16f) {
                             inertiaJob?.cancel()
                             inertiaJob = coroutineScope.launch {
                                 settleRotarySelection(
-                                    rotationDegrees = latestRotationDegrees,
+                                    rotationDegrees = localRotationDegrees,
                                     items = latestItems,
-                                    onRotationChange = latestOnRotationChange
+                                    onRotationChange = { localRotationDegrees = it }
                                 )
+                                latestOnRotationChange(localRotationDegrees)
+                                isRotaryActive = false
                             }
                             return@detectDragGestures
                         }
@@ -646,17 +702,19 @@ internal fun RotaryActionCluster(
                                     val deltaSeconds =
                                         (frameTimeNanos - previousFrameNanos) / 1_000_000_000f
                                     previousFrameNanos = frameTimeNanos
-                                    latestOnRotationChange(latestRotationDegrees + velocity * deltaSeconds)
+                                    localRotationDegrees += velocity * deltaSeconds
                                     val frameDamping = 0.92f.pow(deltaSeconds * 60f)
                                     velocity *= frameDamping
                                 }
                             }
                             angularVelocity = 0f
                             settleRotarySelection(
-                                rotationDegrees = latestRotationDegrees,
+                                rotationDegrees = localRotationDegrees,
                                 items = latestItems,
-                                onRotationChange = latestOnRotationChange
+                                onRotationChange = { localRotationDegrees = it }
                             )
+                            latestOnRotationChange(localRotationDegrees)
+                            isRotaryActive = false
                         }
                     },
                     onDrag = { change, _ ->
@@ -665,7 +723,7 @@ internal fun RotaryActionCluster(
                         val previousAngle = previousTouchAngle ?: change.position.toAngleAround(center)
                         val currentAngle = change.position.toAngleAround(center)
                         val deltaDegrees = normalizedAngleDelta(currentAngle - previousAngle)
-                        latestOnRotationChange(latestRotationDegrees + deltaDegrees)
+                        localRotationDegrees += deltaDegrees
                         val previousTimestamp = previousDragTimestampMillis
                         if (previousTimestamp != null) {
                             val deltaMillis = (change.uptimeMillis - previousTimestamp).coerceAtLeast(1L)
@@ -695,7 +753,7 @@ internal fun RotaryActionCluster(
                 .align(Alignment.Center)
                 .size(dialSize)
                 .graphicsLayer {
-                    rotationZ = rotationDegrees
+                    rotationZ = localRotationDegrees
                 }
         ) {
             Surface(
@@ -774,7 +832,7 @@ internal fun RotaryActionCluster(
                 )
             }
 
-            items.forEachIndexed { index, item ->
+            if (!freeRotation) items.forEachIndexed { index, item ->
                 val baseAngle = baseActionAngle(index, items.size)
                 val radians = Math.toRadians(baseAngle.toDouble())
                 val itemCenterX = dialCenterPx + cos(radians).toFloat() * orbitRadiusPx

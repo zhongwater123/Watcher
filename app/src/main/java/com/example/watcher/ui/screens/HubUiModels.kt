@@ -58,9 +58,9 @@ internal fun workspaceHeaderFor(page: HubPage): WorkspaceHeaderContent {
         )
 
         HubPage.Hub -> WorkspaceHeaderContent(
-            eyebrow = "Watcher Hub",
-            title = "首页总览",
-            subtitle = "这里聚合摄像头连接、实时画面和当前任务状态。"
+            eyebrow = "Watcher",
+            title = "Beyond Vision",
+            subtitle = "开机，磁吸，启动！"
         )
 
         HubPage.Analysis -> WorkspaceHeaderContent(
@@ -123,9 +123,7 @@ internal fun buildHubSummary(
         monitorStatus.isRunning -> HubSummaryModel(
             eyebrow = "实时监控运行中",
             title = currentTask?.title ?: "持续监控任务",
-            subtitle = monitorStatus.lastSummary.ifBlank {
-                currentTask?.userRequirement ?: "正在持续巡检当前画面。"
-            },
+            subtitle = buildMonitorHubSubtitle(monitorStatus, currentTask),
             progress = if (monitorStatus.isPaused) 0.45f else 0.72f,
             tags = listOf(
                 if (monitorStatus.isPaused) "已暂停" else "巡检中",
@@ -163,7 +161,7 @@ internal fun buildHubSummary(
 
         else -> HubSummaryModel(
             eyebrow = "当前没有活动任务",
-            title = "先确认摄像头地址，再选择左滑或右滑进入工作台。",
+            title = "今天要和 Watcher\n一起做什么？",
             subtitle = "首页会持续显示连接状态、当前任务和最近进展。",
             progress = 0.1f,
             tags = listOf("首页总览", "等待任务"),
@@ -171,6 +169,17 @@ internal fun buildHubSummary(
             icon = Icons.Default.Videocam
         )
     }
+}
+
+private fun buildMonitorHubSubtitle(
+    monitorStatus: MonitorStatus,
+    currentTask: IntentResult?
+): String {
+    val summary = monitorStatus.lastSummary.ifBlank {
+        currentTask?.userRequirement ?: "正在持续巡检当前画面。"
+    }
+    val remark = monitorStatus.lastRemark.trim()
+    return if (remark.isBlank()) summary else "$summary\n$remark"
 }
 
 internal fun videoProgress(status: VideoProcessingStatus): Float {

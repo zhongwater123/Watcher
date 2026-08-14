@@ -6,10 +6,12 @@ import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.net.Uri
 import android.speech.RecognizerIntent
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Box
@@ -36,6 +38,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -50,9 +53,11 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.watcher.AgentConfigActivity
 import com.example.watcher.ApiWalletActivity
 import com.example.watcher.DigitalLifeCardActivity
+import com.example.watcher.FitnessCompanionActivity
 import com.example.watcher.LiteRtActivity
 import com.example.watcher.LocalAgentActivity
 import com.example.watcher.MultiDeviceActivity
+import com.example.watcher.BackScreenPushActivity
 import com.example.watcher.PoseEstimationActivity
 import com.example.watcher.data.model.AiAudienceEntity
 import com.example.watcher.data.model.AiAudienceLiveState
@@ -65,32 +70,59 @@ import com.example.watcher.data.model.LlmProviderEntity
 import com.example.watcher.data.model.StorageSummary
 import kotlinx.coroutines.flow.SharedFlow
 import com.example.watcher.data.model.VideoStreamSettings
+import com.example.watcher.data.intentrouter.IntentRouterLog
 import com.example.watcher.ui.components.BottomGlassScrim
 import com.example.watcher.ui.components.CameraFallbackLens
+import com.example.watcher.ui.components.ConnectionStatus
 import com.example.watcher.ui.components.StreamSource
 import com.example.watcher.ui.components.SharedWorkspaceHeader
+import com.example.watcher.ui.components.StartupMainContentPolicy
 import com.example.watcher.ui.components.SwipeCoachmarkOverlay
 import com.example.watcher.ui.components.VideoStreamSettingsDialog
 import com.example.watcher.ui.components.WorkspaceBackdrop
 import com.example.watcher.ui.components.calculatePageOffset
 import com.example.watcher.ui.components.calculatePagerPosition
 import com.example.watcher.ui.components.rememberMjpegStreamState
+import com.example.watcher.ui.intentrouter.IntentRouterViewModel
+import com.example.watcher.ui.intentrouter.QuickNavigationDialog
+import com.example.watcher.ui.intentrouter.toHubPage
 import com.example.watcher.ui.util.PageConciseModeController
 import com.example.watcher.ui.util.PageConciseModeStore
 import com.example.watcher.ui.viewmodel.IntentViewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import java.util.Locale
 import kotlin.math.abs
 
 private const val UI_HINT_PREFS = "watcher_ui_hints"
 private const val KEY_PAGER_COACHMARK_SEEN = "pager_coachmark_seen_v1"
+private const val QUICK_NAVIGATION_HINT_VISIBLE_MS = 5_000L
+private val CLASSROOM_NOTE_MATERIAL_MIME_TYPES = arrayOf(
+    "image/*",
+    "video/*",
+    "audio/*",
+    "application/pdf",
+    "text/*",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.ms-powerpoint",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
 
 @Composable
 fun MainScreen(
     manageSystemBars: Boolean = true,
     viewModel: IntentViewModel = viewModel(
+        factory = androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.getInstance(
+            LocalContext.current.applicationContext as android.app.Application
+        )
+    ),
+    intentRouterViewModel: IntentRouterViewModel = viewModel(
         factory = androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.getInstance(
             LocalContext.current.applicationContext as android.app.Application
         )
@@ -110,6 +142,7 @@ fun MainScreen(
     val tasks by viewModel.tasksFlow.collectAsStateWithLifecycle(initialValue = emptyList())
     val videoTasks by viewModel.videoTasksFlow.collectAsStateWithLifecycle(initialValue = emptyList())
     val recentVideoRuns by viewModel.recentVideoRunsFlow.collectAsStateWithLifecycle(initialValue = emptyList())
+    val recentClassroomRuns by viewModel.recentClassroomRunsFlow.collectAsStateWithLifecycle(initialValue = emptyList())
     val historyRecords by viewModel.historyRecordsFlow.collectAsStateWithLifecycle(initialValue = emptyList())
     val storageSummary by viewModel.storageSummaryFlow.collectAsStateWithLifecycle(initialValue = StorageSummary())
     val streamSettings by viewModel.videoStreamSettings.collectAsStateWithLifecycle(initialValue = null)
@@ -126,10 +159,12 @@ fun MainScreen(
     val videoPlanUiState by viewModel.videoPlanUiState.collectAsStateWithLifecycle()
     val currentVideoTask by viewModel.currentVideoTask.collectAsStateWithLifecycle()
     val videoProcessingStatus by viewModel.videoProcessingStatus.collectAsStateWithLifecycle()
+    val classroomRecordingInput by viewModel.classroomRecordingInput.collectAsStateWithLifecycle()
     val selectedVideoRunId by viewModel.selectedVideoRunId.collectAsStateWithLifecycle()
     val selectedVideoRunEvents by viewModel.selectedVideoRunEvents.collectAsStateWithLifecycle()
     val selectedHistoryRecord by viewModel.selectedHistoryRecord.collectAsStateWithLifecycle()
     val selectedHistoryDetail by viewModel.selectedHistoryDetail.collectAsStateWithLifecycle()
+    val activeVideoHistoryReportDetail by viewModel.activeVideoHistoryReportDetail.collectAsStateWithLifecycle()
     val monitorTemplates by viewModel.monitorTemplatesFlow.collectAsStateWithLifecycle(initialValue = emptyList())
     val videoTemplates by viewModel.videoTemplatesFlow.collectAsStateWithLifecycle(initialValue = emptyList())
     val councilTemplates by viewModel.councilTemplatesFlow.collectAsStateWithLifecycle(initialValue = emptyList())
@@ -145,6 +180,7 @@ fun MainScreen(
     val gatewayRunning by viewModel.gatewayRunning.collectAsStateWithLifecycle()
     val gatewayStatus by viewModel.gatewayStatus.collectAsStateWithLifecycle()
     val gatewayPairingRequests by viewModel.gatewayPairingRequests.collectAsStateWithLifecycle()
+    val intentRouterState by intentRouterViewModel.uiState.collectAsStateWithLifecycle()
     val gatewayPairingBindings by viewModel.gatewayPairingBindings.collectAsStateWithLifecycle()
     val appUpdatePrompt by viewModel.appUpdatePrompt.collectAsStateWithLifecycle()
 
@@ -155,6 +191,10 @@ fun MainScreen(
         mutableStateOf(TextFieldValue())
     }
     var showSettingsDialog by remember { mutableStateOf(false) }
+    var previewRotationDegrees by remember { mutableStateOf<Int?>(null) }
+    var previewMirrorHorizontally by remember { mutableStateOf<Boolean?>(null) }
+    var quickNavigationAnchorBounds by remember { mutableStateOf<Rect?>(null) }
+    var showQuickNavigationHint by remember { mutableStateOf(false) }
     var voiceTarget by remember { mutableStateOf(HubPage.Monitor) }
     var isListening by remember { mutableStateOf(false) }
     var showPagerCoachmark by remember {
@@ -189,18 +229,77 @@ fun MainScreen(
     val currentPage by remember(pagerState) {
         derivedStateOf { HubPage.fromPage(pagerState.currentPage) }
     }
+    val quickNavigationHintVisible by remember {
+        derivedStateOf {
+            showQuickNavigationHint &&
+                !intentRouterState.visible &&
+                currentPage == HubPage.Hub &&
+                quickNavigationAnchorBounds != null
+        }
+    }
+    LaunchedEffect(quickNavigationHintVisible, quickNavigationAnchorBounds) {
+        if (quickNavigationHintVisible) {
+            delay(QUICK_NAVIGATION_HINT_VISIBLE_MS)
+            showQuickNavigationHint = false
+        }
+    }
+    val openQuickNavigation = remember(intentRouterViewModel) {
+        {
+            showQuickNavigationHint = false
+            intentRouterViewModel.show()
+        }
+    }
+    val dismissQuickNavigation = remember(intentRouterViewModel, currentPage) {
+        {
+            intentRouterViewModel.dismiss()
+            showQuickNavigationHint = currentPage == HubPage.Hub
+        }
+    }
+    val streamPreviewActive by remember {
+        derivedStateOf { isStreamPreviewPageVisible(pagerPosition) }
+    }
 
-    val settings = streamSettings ?: VideoStreamSettings()
+    val hasSavedStreamSettings = VideoStreamSettings.shouldAutoConnect(streamSettings)
+    val persistedSettings = streamSettings ?: VideoStreamSettings()
+    val settings = persistedSettings.copy(
+        rotationDegrees = previewRotationDegrees ?: persistedSettings.rotationDegrees,
+        mirrorHorizontally = previewMirrorHorizontally ?: persistedSettings.mirrorHorizontally
+    ).normalized()
+    LaunchedEffect(
+        showSettingsDialog,
+        streamSettings?.rotationDegrees,
+        streamSettings?.mirrorHorizontally
+    ) {
+        val savedSettings = streamSettings?.normalized() ?: return@LaunchedEffect
+        if (
+            !showSettingsDialog &&
+            previewRotationDegrees == savedSettings.rotationDegrees &&
+            previewMirrorHorizontally == savedSettings.mirrorHorizontally
+        ) {
+            previewRotationDegrees = null
+            previewMirrorHorizontally = null
+        }
+    }
     val streamState = rememberMjpegStreamState(
         settings = settings,
-        isPlaying = isStreamPlaying,
+        isPlaying = isStreamPlaying && hasSavedStreamSettings,
         reconnectToken = streamReconnectToken,
+        previewActive = streamPreviewActive,
         onFrameUpdate = viewModel::updateVideoFrame,
         onStreamSourceChanged = viewModel::updateStreamSource,
         onRemoteStreamUnavailable = viewModel::recoverProvisionedDeviceAfterRuntimeDisconnect
     )
+    val startupBlockingDialogsAllowed = StartupMainContentPolicy.canShowBlockingDialogs(
+        mainContentInteractive = manageSystemBars
+    )
 
-    if (streamState.showCameraChooser) {
+    LaunchedEffect(startupBlockingDialogsAllowed, streamState.showCameraChooser) {
+        if (!startupBlockingDialogsAllowed && streamState.showCameraChooser) {
+            Log.d("MjpegStream", "camera chooser pending until startup overlay finished")
+        }
+    }
+
+    if (startupBlockingDialogsAllowed && streamState.showCameraChooser) {
         AlertDialog(
             onDismissRequest = { streamState.chooseCameraLens(CameraFallbackLens.Front) },
             title = { Text("选择摄像头") },
@@ -289,6 +388,44 @@ fun MainScreen(
         onNavigationRequested = { page -> pendingNavigationPage = page.pageIndex }
     )
 
+    LaunchedEffect(intentRouterViewModel, navigateTo) {
+        intentRouterViewModel.navigationEvents.collect { event ->
+            val targetPage = event.routeId.toHubPage()
+            Log.d(
+                IntentRouterLog.TAG,
+                "traceId=${event.traceId} MainScreen navigation consumed routeId=${event.routeId.wireId} targetPage=${targetPage.name} source=${event.sourceLabel}"
+            )
+            navigateTo(targetPage)
+        }
+    }
+
+    val quickNavigationAutoTrigger = remember(
+        startupBlockingDialogsAllowed,
+        streamState.currentFrame,
+        streamState.connectionStatus,
+        streamState.source,
+        streamState.showCameraChooser
+    ) {
+        if (!startupBlockingDialogsAllowed || streamState.currentFrame == null || streamState.showCameraChooser) {
+            return@remember null
+        }
+        when {
+            streamState.source == StreamSource.RemoteMjpeg &&
+                streamState.connectionStatus is ConnectionStatus.Connected -> "remote_mjpeg_first_frame"
+            streamState.source.isCameraFallback -> "camera_fallback_first_frame"
+            else -> null
+        }
+    }
+
+    LaunchedEffect(quickNavigationAutoTrigger) {
+        val trigger = quickNavigationAutoTrigger ?: return@LaunchedEffect
+        Log.d(
+            IntentRouterLog.TAG,
+            "MainScreen first frame ready for auto dialog trigger=$trigger source=${streamState.source} status=${streamState.connectionStatus::class.java.simpleName} dialogsAllowed=$startupBlockingDialogsAllowed"
+        )
+        intentRouterViewModel.showAutomaticallyAfterFirstFrameReady(trigger)
+    }
+
     LaunchedEffect(pagerState.currentPage, pagerState.isScrollInProgress) {
         if (!pagerState.isScrollInProgress && pendingNavigationPage == pagerState.currentPage) {
             pendingNavigationPage = null
@@ -341,6 +478,15 @@ fun MainScreen(
         }
     }
 
+    val fitnessCompanionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        if (settings.streamUrl.isNotBlank()) {
+            viewModel.setStreamPlaying(true)
+            viewModel.reconnectStream()
+        }
+    }
+
     val liteRtLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) {
@@ -359,6 +505,15 @@ fun MainScreen(
         }
     }
 
+    val backScreenPushLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        if (hasSavedStreamSettings) {
+            viewModel.setStreamPlaying(true)
+            viewModel.reconnectStream()
+        }
+    }
+
     val localAgentLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { /* No stream state to restore */ }
@@ -371,6 +526,21 @@ fun MainScreen(
         ActivityResultContracts.PickVisualMedia()
     ) { uri: Uri? ->
         uri?.let(viewModel::setBaselineFromPickedImage)
+    }
+
+    val classroomTestVideoPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        uri?.let(viewModel::selectClassroomTestVideo)
+    }
+
+    val classroomNoteMaterialPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris: List<Uri> ->
+        if (uris.isNotEmpty()) {
+            viewModel.attachClassroomNoteMaterials(uris)
+            Toast.makeText(context, "课堂资料已加入上传队列", Toast.LENGTH_SHORT).show()
+        }
     }
 
     val startListening = remember(speechLauncher, context) {
@@ -607,6 +777,7 @@ fun MainScreen(
                         onStartListening = { startListening(HubPage.Monitor) },
                         onAnalyze = { viewModel.analyzeIntent(monitorRequestText.text) },
                         onSaveTask = viewModel::saveCurrentTask,
+                        onSaveAndStartConciseMonitoring = viewModel::saveAndStartConciseMonitoring,
                         onStartMonitoring = {
                             if (viewModel.startMonitoring(it)) {
                                 navigateTo(HubPage.Hub)
@@ -616,6 +787,7 @@ fun MainScreen(
                         onResumeMonitoring = viewModel::resumeMonitoring,
                         onStopMonitoring = viewModel::stopMonitoring,
                         onRefreshBaseline = viewModel::refreshBaselineFromCurrentFrame,
+                        onClearPendingBaselineImage = viewModel::clearPendingMonitorBaselineImage,
                         onPickBaselineImage = {
                             baselineImagePicker.launch(
                                 PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
@@ -684,6 +856,12 @@ fun MainScreen(
                             viewModel.updateStreamSource(StreamSource.None)
                             digitalLifeCardLauncher.launch(DigitalLifeCardActivity.createIntent(context))
                         },
+                        onNavigateFitnessCompanion = {
+                            viewModel.setStreamPlaying(false)
+                            viewModel.updateVideoFrame(null)
+                            viewModel.updateStreamSource(StreamSource.None)
+                            fitnessCompanionLauncher.launch(FitnessCompanionActivity.createIntent(context))
+                        },
                         onNavigateLiteRt = {
                             liteRtLauncher.launch(LiteRtActivity.createIntent(context))
                         },
@@ -693,71 +871,147 @@ fun MainScreen(
                         onNavigatePoseEstimation = {
                             poseEstimationLauncher.launch(PoseEstimationActivity.createIntent(context))
                         },
+                        onNavigateBackScreenPush = {
+                            viewModel.setStreamPlaying(false)
+                            backScreenPushLauncher.launch(BackScreenPushActivity.createIntent(context))
+                        },
+                        onOpenQuickNavigation = openQuickNavigation,
+                        onQuickNavigationAnchorBoundsChanged = { bounds ->
+                            quickNavigationAnchorBounds = bounds
+                        },
+                        showQuickNavigationHint = quickNavigationHintVisible,
                         currentPage = HubPage.Hub,
                         pageOffset = pageOffset
                     )
 
-                    HubPage.Analysis -> VideoAnalysisWorkbenchPage(
-                        settings = settings,
-                        streamState = streamState,
-                        isStreamPlaying = isStreamPlaying,
-                        currentTask = currentVideoTask,
-                        videoTemplates = videoTemplates,
-                        tasks = videoTasks,
-                        recentRuns = recentVideoRuns,
-                        status = videoProcessingStatus,
-                        planUiState = videoPlanUiState,
-                        selectedRunId = selectedVideoRunId,
-                        selectedRunEvents = selectedVideoRunEvents,
-                        requestText = videoRequestText,
-                        isListening = isListening && voiceTarget == HubPage.Analysis,
-                        onRequestTextChange = { videoRequestText = it },
-                        onStartListening = { startListening(HubPage.Analysis) },
-                        onAnalyze = { viewModel.analyzeVideoIntent(videoRequestText.text) },
-                        onApplyTemplate = { templateId ->
-                            viewModel.applyVideoTemplate(templateId)
-                            videoRequestText = TextFieldValue()
-                        },
-                        onSaveTask = viewModel::saveVideoTask,
-                        onStartProcessing = {
-                            viewModel.launchVideoProcessing(
-                                task = it,
-                                streamingOutputEnabled = settings.videoAnalysisStreamingEnabled
-                            )
-                            navigateTo(HubPage.Hub)
-                        },
-                        onStopProcessing = viewModel::stopVideoProcessing,
-                        onLoadTask = {
-                            videoRequestText = TextFieldValue(it.userInput)
-                            viewModel.loadVideoTask(it)
-                        },
-                        onDeleteTask = viewModel::deleteVideoTask,
-                        onSelectRun = viewModel::selectVideoRun,
-                        onCopyJson = {
-                            currentVideoTask?.let {
-                                clipboardManager.setText(AnnotatedString(buildVideoTaskJson(it)))
-                                Toast.makeText(context, "Video task JSON copied.", Toast.LENGTH_SHORT).show()
+                    HubPage.Analysis -> {
+                        val analysisIsConcise = conciseModeController.isConciseMode(conciseModes, HubPage.Analysis)
+                        Crossfade(
+                            targetState = analysisIsConcise,
+                            animationSpec = tween(360),
+                            label = "analysisModeCrossfade"
+                        ) { concise ->
+                            if (concise) {
+                                ClassroomRecordingPage(
+                                    settings = settings,
+                                    streamState = streamState,
+                                    isStreamPlaying = isStreamPlaying,
+                                    status = videoProcessingStatus,
+                                    recentRuns = recentClassroomRuns,
+                                    selectedRunId = selectedVideoRunId,
+                                    recordingInput = classroomRecordingInput,
+                                    onPlayingChange = viewModel::setStreamPlaying,
+                                    onReconnectStream = viewModel::reconnectStream,
+                                    onCaptureSnapshot = captureSnapshot,
+                                    onOpenSettings = { showSettingsDialog = true },
+                                    onOpenWalletConfig = { context.startActivity(ApiWalletActivity.createIntent(context)) },
+                                    onOpenAgentConfig = { context.startActivity(AgentConfigActivity.createIntent(context)) },
+                                    onPickTestVideo = { classroomTestVideoPicker.launch("video/*") },
+                                    onClearTestVideo = viewModel::clearClassroomTestVideo,
+                                    onCleanupTestVideoCache = viewModel::cleanupClassroomTestVideoCache,
+                                    onStartClassroomRecording = { courseName, duration, speechConfig, recordingInput ->
+                                        viewModel.updateStreamSource(streamState.source)
+                                        viewModel.startClassroomRecording(courseName, duration, speechConfig, recordingInput)
+                                    },
+                                    onStopProcessing = viewModel::stopVideoProcessing,
+                                    onNewRecording = viewModel::resetClassroomRecording,
+                                    onOpenClassroomRun = { runId ->
+                                        viewModel.openClassroomRecordingRun(runId)
+                                        updateConciseMode(HubPage.Analysis, true)
+                                        navigateTo(HubPage.Analysis)
+                                    },
+                                    onToggleTranscriptSelection = viewModel::toggleClassroomTranscriptSelection,
+                                    onAnswerInlineQuestion = viewModel::answerClassroomInlineQuestion,
+                                    onDismissInlineQuestion = viewModel::dismissClassroomInlineQuestion,
+                                    onAskClassroomNoteFollowup = viewModel::askClassroomNoteFollowup,
+                                    onRetryClassroomNoteFollowup = viewModel::retryClassroomNoteFollowup,
+                                    onRegenerateClassroomNoteFollowup = viewModel::regenerateClassroomNoteFollowupWithFinalNote,
+                                      onDeleteClassroomNoteFollowup = viewModel::deleteClassroomNoteFollowup,
+                                      onAppendClassroomNoteMaterials = {
+                                          classroomNoteMaterialPicker.launch(CLASSROOM_NOTE_MATERIAL_MIME_TYPES)
+                                      },
+                                      onOpenRunDetail = { runId ->
+                                          viewModel.selectVideoRun(runId)
+                                        updateConciseMode(HubPage.Analysis, false)
+                                        navigateTo(HubPage.Analysis)
+                                    },
+                                    onCopyNote = { note ->
+                                        clipboardManager.setText(AnnotatedString(note))
+                                        Toast.makeText(context, "课堂笔记已复制", Toast.LENGTH_SHORT).show()
+                                    },
+                                    isConciseMode = true,
+                                    onConciseModeChange = { updateConciseMode(HubPage.Analysis, it) },
+                                    rotaryRotationDegrees = sharedRotaryRotationDegrees,
+                                    onRotaryRotationChange = { sharedRotaryRotationDegrees = it },
+                                    currentPage = HubPage.Analysis,
+                                    pageOffset = pageOffset
+                                )
+                            } else {
+                                VideoAnalysisWorkbenchPage(
+                                    settings = settings,
+                                    streamState = streamState,
+                                    isStreamPlaying = isStreamPlaying,
+                                    currentTask = currentVideoTask,
+                                    videoTemplates = videoTemplates,
+                                    tasks = videoTasks,
+                                    recentRuns = recentVideoRuns,
+                                    status = videoProcessingStatus,
+                                    planUiState = videoPlanUiState,
+                                    selectedRunId = selectedVideoRunId,
+                                    selectedRunEvents = selectedVideoRunEvents,
+                                    requestText = videoRequestText,
+                                    isListening = isListening && voiceTarget == HubPage.Analysis,
+                                    onRequestTextChange = { videoRequestText = it },
+                                    onStartListening = { startListening(HubPage.Analysis) },
+                                    onAnalyze = { viewModel.analyzeVideoIntent(videoRequestText.text) },
+                                    onApplyTemplate = { templateId ->
+                                        viewModel.applyVideoTemplate(templateId)
+                                        videoRequestText = TextFieldValue()
+                                    },
+                                    onSaveTask = viewModel::saveVideoTask,
+                                    onStartProcessing = {
+                                        viewModel.launchVideoProcessing(
+                                            task = it,
+                                            streamingOutputEnabled = settings.videoAnalysisStreamingEnabled
+                                        )
+                                        navigateTo(HubPage.Hub)
+                                    },
+                                    onStopProcessing = viewModel::stopVideoProcessing,
+                                    onLoadTask = {
+                                        videoRequestText = TextFieldValue(it.userInput)
+                                        viewModel.loadVideoTask(it)
+                                    },
+                                    onDeleteTask = viewModel::deleteVideoTask,
+                                    onSelectRun = viewModel::selectVideoRun,
+                                    onCopyJson = {
+                                        currentVideoTask?.let {
+                                            clipboardManager.setText(AnnotatedString(buildVideoTaskJson(it)))
+                                            Toast.makeText(context, "Video task JSON copied.", Toast.LENGTH_SHORT).show()
+                                        }
+                                    },
+                                    onPlayingChange = viewModel::setStreamPlaying,
+                                    onReconnectStream = viewModel::reconnectStream,
+                                    onCaptureSnapshot = captureSnapshot,
+                                    onOpenSettings = { showSettingsDialog = true },
+                                    onOpenAgentConfig = { context.startActivity(AgentConfigActivity.createIntent(context)) },
+                                    onOpenWalletConfig = { context.startActivity(ApiWalletActivity.createIntent(context)) },
+                                    isConciseMode = false,
+                                    onConciseModeChange = { updateConciseMode(HubPage.Analysis, it) },
+                                    rotaryRotationDegrees = sharedRotaryRotationDegrees,
+                                    onRotaryRotationChange = { sharedRotaryRotationDegrees = it },
+                                    currentPage = HubPage.Analysis,
+                                    pageOffset = pageOffset
+                                )
                             }
-                        },
-                        onPlayingChange = viewModel::setStreamPlaying,
-                        onReconnectStream = viewModel::reconnectStream,
-                        onCaptureSnapshot = captureSnapshot,
-                        onOpenSettings = { showSettingsDialog = true },
-                        onOpenAgentConfig = { context.startActivity(AgentConfigActivity.createIntent(context)) },
-                        onOpenWalletConfig = { context.startActivity(ApiWalletActivity.createIntent(context)) },
-                        isConciseMode = conciseModeController.isConciseMode(conciseModes, HubPage.Analysis),
-                        onConciseModeChange = { updateConciseMode(HubPage.Analysis, it) },
-                        rotaryRotationDegrees = sharedRotaryRotationDegrees,
-                        onRotaryRotationChange = { sharedRotaryRotationDegrees = it },
-                        currentPage = HubPage.Analysis,
-                        pageOffset = pageOffset
-                    )
+                        }
+                    }
 
                     HubPage.History -> HistoryWorkbenchPage(
                         historyRecords = historyRecords,
                         storageSummary = storageSummary,
                         selectedRecord = selectedHistoryRecord,
                         selectedDetail = selectedHistoryDetail,
+                        activeVideoReportDetail = activeVideoHistoryReportDetail,
                         onSelectRecord = viewModel::selectHistoryRecord,
                         onDeleteRecord = viewModel::deleteHistoryRecord,
                         onSaveAsTemplate = { detail ->
@@ -775,6 +1029,9 @@ fun MainScreen(
                                 }
                             }
                         },
+                        onOpenVideoReport = viewModel::openVideoHistoryReport,
+                        onCloseVideoReport = viewModel::closeVideoHistoryReport,
+                        onLoadFullHistoryDetail = viewModel::loadFullHistoryDetail,
                         onOpenSettings = { showSettingsDialog = true },
                         onOpenAgentConfig = { context.startActivity(AgentConfigActivity.createIntent(context)) },
                         onOpenWalletConfig = { context.startActivity(ApiWalletActivity.createIntent(context)) },
@@ -856,7 +1113,20 @@ fun MainScreen(
             if (showPagerCoachmark) {
                 SwipeCoachmarkOverlay(onDismiss = dismissCoachmark)
             }
+
         }
+    }
+
+    if (startupBlockingDialogsAllowed) {
+        QuickNavigationDialog(
+            state = intentRouterState,
+            onInputChange = intentRouterViewModel::updateInput,
+            onSubmit = intentRouterViewModel::submit,
+            onExampleSelected = intentRouterViewModel::selectExamplePrompt,
+            onShortcutSelected = intentRouterViewModel::selectShortcut,
+            anchorBounds = quickNavigationAnchorBounds,
+            onDismiss = dismissQuickNavigation
+        )
     }
 
     if (showSettingsDialog) {
@@ -865,6 +1135,8 @@ fun MainScreen(
             scanState = streamScanUiState,
             provisionState = deviceProvisionUiState,
             onDismiss = {
+                previewRotationDegrees = null
+                previewMirrorHorizontally = null
                 viewModel.clearStreamDeviceScan()
                 viewModel.clearDeviceProvisionState()
                 showSettingsDialog = false
@@ -874,12 +1146,19 @@ fun MainScreen(
             onScanProvisionWifi = viewModel::scanProvisioningWifi,
             onSubmitProvisionWifi = viewModel::submitProvisioningWifi,
             onClearProvisionedWifi = viewModel::clearProvisionedWifi,
+            onPreviewFrameOrientation = { rotationDegrees, mirrorHorizontally ->
+                previewRotationDegrees = rotationDegrees
+                previewMirrorHorizontally = mirrorHorizontally
+            },
             onSave = {
-                viewModel.saveVideoStreamSettings(it)
+                val savedSettings = it.normalized()
+                previewRotationDegrees = savedSettings.rotationDegrees
+                previewMirrorHorizontally = savedSettings.mirrorHorizontally
+                viewModel.saveVideoStreamSettings(savedSettings)
                 viewModel.clearStreamDeviceScan()
                 viewModel.clearDeviceProvisionState()
                 showSettingsDialog = false
-                Toast.makeText(context, "Camera settings saved. Reconnecting...", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "视频与监控设置已保存", Toast.LENGTH_SHORT).show()
             }
         )
     }
@@ -929,6 +1208,12 @@ private fun rememberPagerNavigator(
                 }
             }
         }
+    }
+}
+
+private fun isStreamPreviewPageVisible(pagerPosition: Float): Boolean {
+    return listOf(HubPage.Monitor, HubPage.Hub, HubPage.Analysis).any { page ->
+        kotlin.math.abs(pagerPosition - page.pageIndex) < 0.98f
     }
 }
 

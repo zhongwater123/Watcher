@@ -26,6 +26,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
+internal const val CONCISE_MONITOR_CHECK_INTERVAL_SECONDS = 4
+
+internal fun IntentResult.toConciseMonitorTask(): IntentResult {
+    return copy(checkInterval = CONCISE_MONITOR_CHECK_INTERVAL_SECONDS).normalized()
+}
+
 internal class MonitorWorkflowController(
     private val scope: CoroutineScope,
     private val appContext: Context,
@@ -125,6 +131,38 @@ internal class MonitorWorkflowController(
                     )
                 }
         }
+    }
+
+    fun saveAndStartConciseMonitoring(result: IntentResult): Boolean {
+        monitoringStartBlockMessage()?.let { message ->
+            onReconnectStream()
+            _uiState.value = UiState.Error(message)
+            return false
+        }
+        val conciseTask = result.toConciseMonitorTask()
+        WatcherForegroundService.start(appContext, "实时监控运行中", WatcherForegroundService.REASON_MONITOR)
+        scope.launch {
+            runCatching { repository.saveTask(conciseTask) }
+                .onSuccess { saved ->
+                    showMonitorIntentResult(saved)
+                    val started = startMonitoringInternal(saved)
+                    if (!started) {
+                        WatcherForegroundService.stop(appContext, WatcherForegroundService.REASON_MONITOR)
+                    }
+                }
+                .onFailure { error ->
+                    WatcherForegroundService.stop(appContext, WatcherForegroundService.REASON_MONITOR)
+                    _uiState.value = UiState.Error(
+                        error.message ?: appContext.getString(R.string.error_save_task_failed)
+                    )
+                }
+        }
+        return true
+    }
+
+    fun clearPendingBaselineImage() {
+        _pendingBaselineImagePath.value = null
+        _pendingBaselineBase64.value = null
     }
 
     fun refreshBaselineFromCurrentFrame() {
@@ -230,7 +268,7 @@ internal class MonitorWorkflowController(
             _uiState.value = UiState.Error(message)
             return false
         }
-        WatcherForegroundService.start(appContext, "实时监控运行中")
+        WatcherForegroundService.start(appContext, "实时监控运行中", WatcherForegroundService.REASON_MONITOR)
         scope.launch {
             startMonitoringInternal(task)
         }
@@ -247,7 +285,7 @@ internal class MonitorWorkflowController(
 
     fun stopMonitoring() {
         monitorManager.stopMonitoring()
-        WatcherForegroundService.stop(appContext)
+        WatcherForegroundService.stop(appContext, WatcherForegroundService.REASON_MONITOR)
     }
 
     fun saveSnapshot(bitmap: Bitmap): String? {
@@ -285,7 +323,7 @@ internal class MonitorWorkflowController(
     private fun stopMonitoringIfRunning() {
         if (monitorManager.monitorStatus.value.isRunning) {
             monitorManager.stopMonitoring()
-            WatcherForegroundService.stop(appContext)
+            WatcherForegroundService.stop(appContext, WatcherForegroundService.REASON_MONITOR)
         }
     }
 
@@ -299,11 +337,11 @@ internal class MonitorWorkflowController(
         startMonitoringInternal(task)
     }
 
-    private suspend fun startMonitoringInternal(task: IntentResult) {
+    private suspend fun startMonitoringInternal(task: IntentResult): Boolean {
         monitoringStartBlockMessage()?.let { message ->
             onReconnectStream()
             _uiState.value = UiState.Error(message)
-            return
+            return false
         }
         val normalized = task.normalized()
         _currentIntentResult.value = normalized
@@ -313,6 +351,7 @@ internal class MonitorWorkflowController(
         }
         val runId = historyRepository.startMonitorRun(normalized)
         monitorManager.startMonitoring(normalized, runId)
+        return true
     }
 
     private fun monitoringStartBlockMessage(): String? {

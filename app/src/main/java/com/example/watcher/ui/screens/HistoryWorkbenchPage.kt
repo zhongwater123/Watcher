@@ -29,7 +29,6 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -55,6 +54,8 @@ import com.example.watcher.data.model.MonitorHistoryDetail
 import com.example.watcher.data.model.StorageSummary
 import com.example.watcher.data.model.VideoHistoryDetail
 import com.example.watcher.data.model.VideoRemoteFileBindingEntity
+import com.example.watcher.data.model.isStaleMonitorRun
+import com.example.watcher.data.model.isStalePostCaptureVideoRun
 import com.example.watcher.ui.components.EmptyHint
 import com.example.watcher.ui.components.HistoryTile
 import com.example.watcher.ui.components.MotionDepth
@@ -76,10 +77,14 @@ internal fun HistoryWorkbenchPage(
     storageSummary: StorageSummary,
     selectedRecord: HistoryRecordSelection?,
     selectedDetail: HistoryRecordDetail?,
+    activeVideoReportDetail: VideoHistoryDetail?,
     onSelectRecord: (HistoryRecordSelection?) -> Unit,
     onDeleteRecord: (HistoryRecordSelection) -> Unit,
     onSaveAsTemplate: (HistoryRecordDetail) -> Unit,
     onShareAsTemplate: (HistoryRecordDetail) -> Unit,
+    onOpenVideoReport: (HistoryRecordSelection) -> Unit,
+    onCloseVideoReport: () -> Unit,
+    onLoadFullHistoryDetail: (HistoryRecordSelection, (HistoryRecordDetail?) -> Unit) -> Unit,
     onOpenSettings: () -> Unit,
     onOpenAgentConfig: () -> Unit,
     onOpenWalletConfig: () -> Unit,
@@ -92,24 +97,9 @@ internal fun HistoryWorkbenchPage(
     pageOffset: Float
 ) {
     val header = workspaceHeaderFor(currentPage)
-    var activeReportDetail by remember { mutableStateOf<VideoHistoryDetail?>(null) }
-    var pendingReportRecordId by rememberSaveable { mutableStateOf<Long?>(null) }
 
-    LaunchedEffect(selectedDetail, pendingReportRecordId) {
-        val detail = selectedDetail
-        if (detail is VideoHistoryDetail) {
-            if (pendingReportRecordId == detail.selection.recordId) {
-                activeReportDetail = detail
-                pendingReportRecordId = null
-            } else if (activeReportDetail?.selection == detail.selection) {
-                activeReportDetail = detail
-            }
-        }
-    }
-
-    BackHandler(enabled = activeReportDetail != null) {
-        activeReportDetail = null
-        pendingReportRecordId = null
+    BackHandler(enabled = activeVideoReportDetail != null) {
+        onCloseVideoReport()
     }
 
     PageScaffold(page = currentPage, pageOffset = pageOffset) {
@@ -131,15 +121,12 @@ internal fun HistoryWorkbenchPage(
             )
         }
 
-        val reportDetail = activeReportDetail
+        val reportDetail = activeVideoReportDetail
         if (reportDetail != null) {
             MotionStageSection(pageOffset = pageOffset, depth = MotionDepth.Focus) {
                 VideoAnalysisReportPage(
                     detail = reportDetail,
-                    onBack = {
-                        activeReportDetail = null
-                        pendingReportRecordId = null
-                    }
+                    onBack = onCloseVideoReport
                 )
             }
         } else {
@@ -153,10 +140,7 @@ internal fun HistoryWorkbenchPage(
                         historyRecords = historyRecords,
                         selectedRecord = selectedRecord,
                         onSelectRecord = onSelectRecord,
-                        onOpenVideoReport = { selection ->
-                            pendingReportRecordId = selection.recordId
-                            onSelectRecord(selection)
-                        }
+                        onOpenVideoReport = onOpenVideoReport
                     )
                 }
             }
@@ -165,7 +149,8 @@ internal fun HistoryWorkbenchPage(
                 onDeleteRecord = onDeleteRecord,
                 onSaveAsTemplate = onSaveAsTemplate,
                 onShareAsTemplate = onShareAsTemplate,
-                onOpenVideoReport = { activeReportDetail = it },
+                onOpenVideoReport = { onOpenVideoReport(it.selection) },
+                onLoadFullHistoryDetail = onLoadFullHistoryDetail,
                 isVisible = isVisible
             )
         }
@@ -260,6 +245,7 @@ private fun HistoryDetailCard(
     onSaveAsTemplate: (HistoryRecordDetail) -> Unit,
     onShareAsTemplate: (HistoryRecordDetail) -> Unit,
     onOpenVideoReport: (VideoHistoryDetail) -> Unit,
+    onLoadFullHistoryDetail: (HistoryRecordSelection, (HistoryRecordDetail?) -> Unit) -> Unit,
     isVisible: Boolean
 ) {
     val context = LocalContext.current
@@ -314,7 +300,14 @@ private fun HistoryDetailCard(
             ) {
                 Button(
                     onClick = {
-                        exportStatus = shareHistoryDebugExport(context = context, detail = detail)
+                        exportStatus = "正在加载完整调试数据..."
+                        onLoadFullHistoryDetail(detail.selection) { fullDetail ->
+                            exportStatus = if (fullDetail == null) {
+                                "源记录已不存在，无法导出调试包"
+                            } else {
+                                shareHistoryDebugExport(context = context, detail = fullDetail)
+                            }
+                        }
                     },
                     shape = RoundedCornerShape(18.dp),
                     colors = ButtonDefaults.buttonColors(
@@ -394,7 +387,14 @@ private fun HistoryDetailCard(
                 androidx.compose.material3.Icon(Icons.Default.Delete, contentDescription = null)
                 Text(
                     modifier = Modifier.padding(start = 8.dp),
-                    text = if (detail.canDelete) "删除这条记录" else "运行中的记录不可删除"
+                    text = when {
+                        detail is VideoHistoryDetail && isStalePostCaptureVideoRun(detail.run) ->
+                            "清理这条中断记录"
+                        detail is MonitorHistoryDetail && isStaleMonitorRun(detail.run) ->
+                            "清理这条中断监控记录"
+                        detail.canDelete -> "删除这条记录"
+                        else -> "运行中的记录不可删除"
+                    }
                 )
             }
         }
@@ -406,13 +406,7 @@ private fun VideoHistoryRecordContent(
     detail: VideoHistoryDetail,
     isVisible: Boolean
 ) {
-    var showDebugDetails by rememberSaveable(detail.selection.recordId) { mutableStateOf(true) }
-
-    LaunchedEffect(isVisible, detail.selection.recordId) {
-        if (!isVisible) {
-            showDebugDetails = true
-        }
-    }
+    var showDebugDetails by rememberSaveable(detail.selection.recordId) { mutableStateOf(false) }
 
     SectionCard(title = "报告入口", accent = MaterialTheme.colorScheme.primary) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -422,10 +416,9 @@ private fun VideoHistoryRecordContent(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                StatusPill(text = "分片 ${detail.segments.size}", accent = MaterialTheme.colorScheme.primary)
-                StatusPill(text = "事件 ${detail.events.size}", accent = MaterialTheme.colorScheme.secondary)
-                StatusPill(text = "语音 ${detail.speechTranscripts.size}", accent = MaterialTheme.colorScheme.tertiary)
-                StatusPill(text = "Audio assets ${detail.audioAssets.size}", accent = MaterialTheme.colorScheme.tertiary)
+                StatusPill(text = "分片 ${detail.totalSegmentCount}", accent = MaterialTheme.colorScheme.primary)
+                StatusPill(text = "事件 ${detail.totalEventCount}", accent = MaterialTheme.colorScheme.secondary)
+                StatusPill(text = "语音 ${detail.totalSpeechTranscriptCount}", accent = MaterialTheme.colorScheme.tertiary)
             }
             Button(
                 onClick = { showDebugDetails = !showDebugDetails },
@@ -522,21 +515,39 @@ private fun DebugBlock(title: String, body: String) {
 @Composable
 private fun MonitorHistoryDetailContent(detail: MonitorHistoryDetail) {
     var selectedEventImagePath by rememberSaveable(detail.selection.recordId) {
-        mutableStateOf(detail.events.firstNotNullOfOrNull { it.frameImagePath })
+        mutableStateOf<String?>(null)
     }
 
     SectionCard(title = "运行统计", accent = MaterialTheme.colorScheme.primary) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            StatusPill(text = "巡检 ${detail.run.totalCheckCount}", accent = MaterialTheme.colorScheme.primary)
-            StatusPill(text = "警报 ${detail.run.alertCount}", accent = Color(0xFFC9485B))
-            StatusPill(text = "预警 ${detail.run.warningCount}", accent = Color(0xFFE9A23B))
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                StatusPill(text = "巡检 ${detail.run.totalCheckCount}", accent = MaterialTheme.colorScheme.primary)
+                StatusPill(text = "警报 ${detail.run.alertCount}", accent = Color(0xFFC9485B))
+                StatusPill(text = "预警 ${detail.run.warningCount}", accent = Color(0xFFE9A23B))
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                StatusPill(text = "事件 ${detail.totalEventCount}", accent = MaterialTheme.colorScheme.secondary)
+                StatusPill(text = "媒体 ${detail.totalMediaCount}", accent = MaterialTheme.colorScheme.tertiary)
+            }
         }
     }
 
-    SectionCard(title = "完整视频记录", accent = MaterialTheme.colorScheme.tertiary) {
+    ExpandableSectionCard(
+        title = "完整视频记录",
+        accent = MaterialTheme.colorScheme.tertiary,
+        stateKey = "${detail.selection.recordId}-session-video",
+        summary = if (detail.run.sessionVideoPath.isNullOrBlank()) {
+            "这次监控还没有归档完整视频。"
+        } else {
+            "点击后加载视频播放器。"
+        }
+    ) {
         val sessionVideoPath = detail.run.sessionVideoPath
         if (sessionVideoPath.isNullOrBlank()) {
             EmptyHint("这次监控还没有归档完整视频。")
@@ -552,7 +563,16 @@ private fun MonitorHistoryDetailContent(detail: MonitorHistoryDetail) {
         }
     }
 
-    SectionCard(title = "基准图片", accent = MaterialTheme.colorScheme.secondary) {
+    ExpandableSectionCard(
+        title = "基准图片",
+        accent = MaterialTheme.colorScheme.secondary,
+        stateKey = "${detail.selection.recordId}-baseline",
+        summary = if (detail.run.baselineImagePath.isNullOrBlank()) {
+            "启动时没有成功保存基准图片。"
+        } else {
+            "点击后加载基准缩略图。"
+        }
+    ) {
         val baselinePath = detail.run.baselineImagePath
         if (baselinePath.isNullOrBlank()) {
             EmptyHint("启动时没有成功保存基准图片。")
@@ -568,13 +588,21 @@ private fun MonitorHistoryDetailContent(detail: MonitorHistoryDetail) {
         }
     }
 
-    SectionCard(title = "关键事件", accent = MaterialTheme.colorScheme.secondary) {
+    ExpandableSectionCard(
+        title = "关键事件",
+        accent = MaterialTheme.colorScheme.secondary,
+        stateKey = "${detail.selection.recordId}-events",
+        summary = previewCountLabel(detail.events.size, detail.totalEventCount)
+    ) {
         selectedEventImagePath?.let { SnapshotPreview(path = it) }
         if (detail.events.isEmpty()) {
             EmptyHint("还没有记录到监控事件。")
         } else {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                detail.events.forEach { event ->
+            LazyColumn(
+                modifier = Modifier.height(280.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(detail.events, key = { it.id }) { event ->
                     val isSelected = selectedEventImagePath == event.frameImagePath &&
                         !event.frameImagePath.isNullOrBlank()
                     Surface(
@@ -615,12 +643,20 @@ private fun MonitorHistoryDetailContent(detail: MonitorHistoryDetail) {
         }
     }
 
-    SectionCard(title = "附加快照", accent = MaterialTheme.colorScheme.tertiary) {
+    ExpandableSectionCard(
+        title = "附加快照",
+        accent = MaterialTheme.colorScheme.tertiary,
+        stateKey = "${detail.selection.recordId}-media",
+        summary = previewCountLabel(detail.media.size, detail.totalMediaCount)
+    ) {
         if (detail.media.isEmpty()) {
             EmptyHint("这次监控没有额外保存快照文件。")
         } else {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                detail.media.forEach { media ->
+            LazyColumn(
+                modifier = Modifier.height(240.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(detail.media, key = { it.id }) { media ->
                     Surface(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -646,7 +682,12 @@ private fun MonitorHistoryDetailContent(detail: MonitorHistoryDetail) {
         }
     }
 
-    SectionCard(title = "调试详情", accent = MaterialTheme.colorScheme.tertiary) {
+    ExpandableSectionCard(
+        title = "调试详情",
+        accent = MaterialTheme.colorScheme.tertiary,
+        stateKey = "${detail.selection.recordId}-debug",
+        summary = "默认不渲染完整调试文本；导出调试包会单独读取完整数据。"
+    ) {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             DebugLine("Run ID", detail.run.id.toString())
             DebugLine("任务 ID", detail.run.taskId?.toString() ?: "无")
@@ -656,8 +697,8 @@ private fun MonitorHistoryDetailContent(detail: MonitorHistoryDetail) {
             DebugLine("状态", detail.run.status.name)
             DebugBlock("Task 完整字段", debugExportGson.toJson(detail.task))
             DebugBlock("Run 完整字段", debugExportGson.toJson(detail.run))
-            DebugBlock("Events 完整字段", debugExportGson.toJson(detail.events))
-            DebugBlock("Media 完整字段", debugExportGson.toJson(detail.media))
+            DebugBlock("Events 预览字段", debugExportGson.toJson(detail.events))
+            DebugBlock("Media 预览字段", debugExportGson.toJson(detail.media))
         }
     }
 }
@@ -679,6 +720,35 @@ private fun SectionCard(
         ) {
             Text(text = title, style = MaterialTheme.typography.labelLarge, color = accent)
             content()
+        }
+    }
+}
+
+@Composable
+private fun ExpandableSectionCard(
+    title: String,
+    accent: Color,
+    stateKey: String = title,
+    summary: String,
+    content: @Composable () -> Unit
+) {
+    var expanded by rememberSaveable(stateKey) { mutableStateOf(false) }
+    SectionCard(title = title, accent = accent) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                text = summary,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Button(
+                onClick = { expanded = !expanded },
+                shape = RoundedCornerShape(18.dp)
+            ) {
+                Text(if (expanded) "收起" else "展开")
+            }
+            if (expanded) {
+                content()
+            }
         }
     }
 }
@@ -731,16 +801,13 @@ private fun VideoPreview(
                 view.tag = path
                 view.setVideoURI(Uri.fromFile(file))
             }
-            if (!view.isPlaying) {
-                view.start()
-            }
         }
     )
 }
 
 @Composable
 private fun SnapshotPreview(path: String) {
-    val bitmap = remember(path) { BitmapFactory.decodeFile(path) }
+    val bitmap = remember(path) { decodePreviewBitmap(path) }
     if (bitmap == null) {
         EmptyHint("图片文件不存在或无法读取。")
         return
@@ -755,6 +822,34 @@ private fun SnapshotPreview(path: String) {
             .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(20.dp)),
         contentScale = ContentScale.Crop
     )
+}
+
+private fun decodePreviewBitmap(path: String): android.graphics.Bitmap? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeFile(path, bounds)
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+    val options = BitmapFactory.Options().apply {
+        inSampleSize = calculateInSampleSize(bounds, reqWidth = 720, reqHeight = 720)
+    }
+    return BitmapFactory.decodeFile(path, options)
+}
+
+private fun calculateInSampleSize(
+    options: BitmapFactory.Options,
+    reqWidth: Int,
+    reqHeight: Int
+): Int {
+    val height = options.outHeight
+    val width = options.outWidth
+    var inSampleSize = 1
+    if (height > reqHeight || width > reqWidth) {
+        var halfHeight = height / 2
+        var halfWidth = width / 2
+        while (halfHeight / inSampleSize >= reqHeight && halfWidth / inSampleSize >= reqWidth) {
+            inSampleSize *= 2
+        }
+    }
+    return inSampleSize
 }
 
 private fun shareHistoryDebugExport(
@@ -1191,6 +1286,14 @@ private fun formatBytes(bytes: Long): String {
         bytes >= 1024L * 1024L -> String.format("%.1f MB", bytes / 1024f / 1024f)
         bytes >= 1024L -> String.format("%.1f KB", bytes / 1024f)
         else -> "$bytes B"
+    }
+}
+
+private fun previewCountLabel(visibleCount: Int, totalCount: Int): String {
+    return if (totalCount > visibleCount) {
+        "已展示最近 $visibleCount 条 / 共 $totalCount 条。"
+    } else {
+        "共 $totalCount 条。"
     }
 }
 

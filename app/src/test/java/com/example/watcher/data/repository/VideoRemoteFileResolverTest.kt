@@ -197,6 +197,34 @@ class VideoRemoteFileResolverTest {
         file.delete()
     }
 
+    @Test
+    fun uploadsClassroomNoteMaterialAsGenericUserDataFile() = runBlocking {
+        val file = File.createTempFile("watcher-note-material", ".pdf").apply {
+            writeBytes(ByteArray(32) { 3 })
+        }
+        val dao = FakeBindingDao()
+        val api = FakeDoubaoApiService(
+            uploadResult = ArkFileResponse(id = "file-material", status = "processing")
+        )
+        val resolver = VideoRemoteFileResolver(api, dao, apiKey = "test")
+
+        val result = resolver.resolveUserDataFile(
+            file = file,
+            runId = RUN_ID,
+            assetKind = VideoRemoteAssetKind.ClassroomNoteMaterial,
+            mediaType = "application/pdf"
+        )
+
+        assertEquals(RemoteFileResolutionType.Uploaded, result.resolutionType)
+        assertEquals("file-material", result.fileId)
+        assertEquals(VideoRemoteAssetKind.ClassroomNoteMaterial.value, result.binding.assetKind)
+        assertEquals("file-material", result.binding.arkFileId)
+        assertEquals("uploaded", result.binding.status)
+        assertEquals(1, api.uploadCalls)
+        assertEquals(0, api.lastPreprocessConfigCount)
+        file.delete()
+    }
+
     private fun createTempFileWithBytes(sizeBytes: Int): File {
         return File.createTempFile("watcher-remote-file", ".mp4").apply {
             writeBytes(ByteArray(sizeBytes) { 7 })
@@ -222,6 +250,18 @@ class VideoRemoteFileResolverTest {
 
         override fun observeForRun(runId: Long): Flow<List<VideoRemoteFileBindingEntity>> {
             return flowOf(bindings.filter { it.runId == runId })
+        }
+
+        override fun observeForRunAndAssetKind(runId: Long, assetKind: String): Flow<List<VideoRemoteFileBindingEntity>> {
+            return flowOf(bindings.filter { it.runId == runId && it.assetKind == assetKind })
+        }
+
+        override fun observeForRunLimited(runId: Long, limit: Int): Flow<List<VideoRemoteFileBindingEntity>> {
+            return flowOf(bindings.filter { it.runId == runId }.take(limit))
+        }
+
+        override fun observeCountForRun(runId: Long): Flow<Int> {
+            return flowOf(bindings.count { it.runId == runId })
         }
 
         override suspend fun getForRun(runId: Long): List<VideoRemoteFileBindingEntity> {
@@ -273,6 +313,7 @@ class VideoRemoteFileResolverTest {
         private val uploadResult: ArkFileResponse = ArkFileResponse(id = "file-uploaded", status = "uploaded")
     ) : DoubaoApiService {
         var uploadCalls = 0
+        var lastPreprocessConfigCount = -1
 
         override suspend fun analyzeIntent(
             authorization: String,
@@ -293,6 +334,7 @@ class VideoRemoteFileResolverTest {
             file: MultipartBody.Part
         ): ArkFileResponse {
             uploadCalls++
+            lastPreprocessConfigCount = preprocessConfigs.size
             return uploadResult
         }
 

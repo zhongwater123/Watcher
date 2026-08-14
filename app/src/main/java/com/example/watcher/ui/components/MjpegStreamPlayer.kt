@@ -26,7 +26,6 @@ import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Videocam
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilledTonalIconButton
@@ -34,7 +33,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -42,6 +40,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -95,12 +94,42 @@ enum class StreamSource {
 
 private const val REMOTE_STREAM_RETRY_ATTEMPTS = 3
 private const val REMOTE_STREAM_RETRY_DELAY_MS = 750L
+private const val REMOTE_STREAM_UI_FRAME_INTERVAL_MS = 66L
+
+internal class MjpegFramePublishGate(
+    private val minFrameIntervalMs: Long = REMOTE_STREAM_UI_FRAME_INTERVAL_MS
+) {
+    private var lastPublishedFrameMs: Long? = null
+
+    fun shouldPublishFrame(nowMs: Long): Boolean {
+        val previous = lastPublishedFrameMs
+        if (previous != null && nowMs - previous < minFrameIntervalMs) {
+            return false
+        }
+        lastPublishedFrameMs = nowMs
+        return true
+    }
+}
+
+internal class MjpegFrameDispatchPolicy(
+    private val previewActive: Boolean,
+    private val previewPublishGate: MjpegFramePublishGate
+) {
+    fun shouldDispatchBusinessFrame(): Boolean = true
+
+    fun shouldPublishPreviewFrame(nowMs: Long): Boolean {
+        return previewActive && previewPublishGate.shouldPublishFrame(nowMs)
+    }
+}
 
 @Composable
 fun rememberMjpegStreamState(
     settings: VideoStreamSettings,
     isPlaying: Boolean,
     reconnectToken: Int = 0,
+    previewActive: Boolean = true,
+    reservationOwner: String? = null,
+    autoSelectFallbackOnUnavailable: Boolean = false,
     onFrameUpdate: (Bitmap?) -> Unit = {},
     onStreamSourceChanged: (StreamSource) -> Unit = {},
     onRemoteStreamUnavailable: () -> Unit = {}
@@ -109,7 +138,7 @@ fun rememberMjpegStreamState(
     // This replaces lifecycle-based disconnection which broke background monitoring tasks
     val streamReserved by com.example.watcher.data.repository.StreamReservation.owner
         .collectAsState()
-    val effectivePlaying = isPlaying && streamReserved == null
+    val effectivePlaying = isPlaying && (streamReserved == null || streamReserved == reservationOwner)
 
     var currentFrame by remember { mutableStateOf<Bitmap?>(null) }
     var connectionStatus by remember { mutableStateOf<ConnectionStatus>(ConnectionStatus.Disconnected) }
@@ -119,17 +148,48 @@ fun rememberMjpegStreamState(
     var sourceLabel by remember { mutableStateOf("") }
     var fallbackRequested by remember { mutableStateOf(false) }
     var showCameraChooser by remember { mutableStateOf(false) }
-    var selectedLens by rememberSaveable { mutableStateOf(CameraFallbackLens.Front) }
+    var selectedLens by rememberSaveable { mutableStateOf(CameraFallbackPreference.selectedLens) }
+    val latestPreviewActive by rememberUpdatedState(previewActive)
+    val latestSettings by rememberUpdatedState(settings.normalized())
+
+    fun activateFallback(lens: CameraFallbackLens) {
+        selectedLens = lens
+        fallbackRequested = true
+        showCameraChooser = false
+        val chosenLabel = cameraSourceLabel(lens)
+        activeStreamUrl = chosenLabel
+        source = when (lens) {
+            CameraFallbackLens.Front -> StreamSource.FrontCameraFallback
+            CameraFallbackLens.Back -> StreamSource.BackCameraFallback
+        }
+        sourceLabel = chosenLabel
+        connectionStatus = ConnectionStatus.Connecting
+        CameraFallbackPreference.recordSelectedLens(lens)
+    }
 
     val fallbackState = rememberCameraFallbackState(
-        active = isPlaying && fallbackRequested && !showCameraChooser,
+        active = effectivePlaying && fallbackRequested && !showCameraChooser,
         lens = selectedLens,
         reconnectToken = reconnectToken,
+        frameTransform = { frame ->
+            val frameSettings = latestSettings
+            StreamFrameTransform.apply(
+                bitmap = frame,
+                rotationDegrees = frameSettings.rotationDegrees,
+                mirrorHorizontally = frameSettings.mirrorHorizontally
+            )
+        },
         onFrameUpdate = onFrameUpdate
     )
 
     LaunchedEffect(source) {
         onStreamSourceChanged(source)
+    }
+
+    LaunchedEffect(previewActive) {
+        if (!previewActive) {
+            currentFrame = null
+        }
     }
 
     LaunchedEffect(effectivePlaying, settings.streamUrl, reconnectToken) {
@@ -150,6 +210,11 @@ fun rememberMjpegStreamState(
         source = StreamSource.RemoteMjpeg
         sourceLabel = settings.streamDisplayUrl
         activeStreamUrl = settings.streamDisplayUrl
+        if (CameraFallbackPreference.preferFallbackFirst) {
+            activateFallback(CameraFallbackPreference.selectedLens)
+            return@LaunchedEffect
+        }
+
         withContext(Dispatchers.IO) {
             var shouldUseFallback = false
             var streamStopped = false
@@ -199,23 +264,37 @@ fun rememberMjpegStreamState(
                                     connectionStatus = ConnectionStatus.Connected
                                     source = StreamSource.RemoteMjpeg
                                     sourceLabel = settings.streamDisplayUrl
+                                    CameraFallbackPreference.markRemoteConnected()
                                 }
 
                                 var frameCount = 0
                                 var lastFpsTimestamp = System.currentTimeMillis()
+                                val framePublishGate = MjpegFramePublishGate()
 
                                 while (isActive && isPlaying) {
                                     try {
                                         val frame = reader.readFrame()
                                         if (frame != null) {
-                                            withContext(Dispatchers.Main) {
-                                                currentFrame = frame
-                                                source = StreamSource.RemoteMjpeg
-                                                sourceLabel = settings.streamDisplayUrl
-                                                onFrameUpdate(frame)
+                                            val frameSettings = latestSettings
+                                            val displayFrame = StreamFrameTransform.apply(
+                                                bitmap = frame,
+                                                rotationDegrees = frameSettings.rotationDegrees,
+                                                mirrorHorizontally = frameSettings.mirrorHorizontally
+                                            )
+                                            val now = System.currentTimeMillis()
+                                            val dispatchPolicy = MjpegFrameDispatchPolicy(
+                                                previewActive = latestPreviewActive,
+                                                previewPublishGate = framePublishGate
+                                            )
+                                            if (dispatchPolicy.shouldDispatchBusinessFrame()) {
+                                                withContext(Dispatchers.Main) {
+                                                    onFrameUpdate(displayFrame)
+                                                    if (dispatchPolicy.shouldPublishPreviewFrame(now)) {
+                                                        currentFrame = displayFrame
+                                                    }
+                                                }
                                             }
                                             frameCount += 1
-                                            val now = System.currentTimeMillis()
                                             if (now - lastFpsTimestamp >= 1_000) {
                                                 withContext(Dispatchers.Main) {
                                                     fps = frameCount
@@ -285,11 +364,15 @@ fun rememberMjpegStreamState(
                 withContext(Dispatchers.Main) {
                     if (shouldUseFallback) {
                         onRemoteStreamUnavailable()
-                        showCameraChooser = true
                         currentFrame = null
                         fps = 0
-                        connectionStatus = ConnectionStatus.Connecting
                         onFrameUpdate(null)
+                        if (autoSelectFallbackOnUnavailable) {
+                            activateFallback(CameraFallbackPreference.selectedLens)
+                        } else {
+                            showCameraChooser = true
+                            connectionStatus = ConnectionStatus.Connecting
+                        }
                     } else {
                         currentFrame = null
                         fps = 0
@@ -330,17 +413,7 @@ fun rememberMjpegStreamState(
         sourceLabel = sourceLabel,
         showCameraChooser = showCameraChooser,
         chooseCameraLens = { lens ->
-            selectedLens = lens
-            showCameraChooser = false
-            fallbackRequested = true
-            val chosenLabel = cameraSourceLabel(lens)
-            activeStreamUrl = chosenLabel
-            source = when (lens) {
-                CameraFallbackLens.Front -> StreamSource.FrontCameraFallback
-                CameraFallbackLens.Back -> StreamSource.BackCameraFallback
-            }
-            sourceLabel = chosenLabel
-            connectionStatus = ConnectionStatus.Connecting
+            activateFallback(lens)
         },
         requestSwitchCamera = {
             showCameraChooser = true
@@ -352,6 +425,9 @@ fun rememberMjpegStreamState(
 fun MjpegStreamPlayer(
     settings: VideoStreamSettings,
     isPlaying: Boolean,
+    previewActive: Boolean = true,
+    reservationOwner: String? = null,
+    autoSelectFallbackOnUnavailable: Boolean = false,
     onPlayingChange: (Boolean) -> Unit,
     onFrameCaptured: (Bitmap) -> Unit = {},
     onFrameUpdate: (Bitmap?) -> Unit = {},
@@ -362,28 +438,13 @@ fun MjpegStreamPlayer(
     val streamState = rememberMjpegStreamState(
         settings = settings,
         isPlaying = isPlaying,
+        previewActive = previewActive,
+        reservationOwner = reservationOwner,
+        autoSelectFallbackOnUnavailable = autoSelectFallbackOnUnavailable,
         onFrameUpdate = onFrameUpdate,
         onStreamSourceChanged = onStreamSourceChanged,
         onRemoteStreamUnavailable = onRemoteStreamUnavailable
     )
-
-    if (streamState.showCameraChooser) {
-        AlertDialog(
-            onDismissRequest = { streamState.chooseCameraLens(CameraFallbackLens.Front) },
-            title = { Text("选择摄像头") },
-            text = { Text("ESP32 视频流不可用，请选择降级画面来源：") },
-            confirmButton = {
-                TextButton(onClick = { streamState.chooseCameraLens(CameraFallbackLens.Front) }) {
-                    Text("前置摄像头")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { streamState.chooseCameraLens(CameraFallbackLens.Back) }) {
-                    Text("后置摄像头")
-                }
-            }
-        )
-    }
 
     val connectionAccent = when (streamState.connectionStatus) {
         ConnectionStatus.Connected -> MaterialTheme.colorScheme.tertiary

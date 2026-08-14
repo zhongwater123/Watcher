@@ -38,6 +38,23 @@ internal class VideoMediaAssembler(
         ).absolutePath
     }
 
+    suspend fun mergeRecordedSegmentVideos(
+        runId: Long,
+        segments: List<RecordedSegment>,
+        outputRoot: File
+    ): String {
+        val segmentFiles = resolveRecordedSegmentVideoFiles(runId, segments, outputRoot)
+        if (segmentFiles.isEmpty()) {
+            throw IllegalStateException("No recorded segment files are available for merging.")
+        }
+
+        val outputFile = File(outputRoot, "video_runs/run_${runId}_merged.mp4")
+        return segmentMerger.mergeSegments(
+            segmentFiles = segmentFiles,
+            outputFile = outputFile
+        ).absolutePath
+    }
+
     suspend fun mergeVideoWithMasterAudio(
         runId: Long,
         videoPath: String?,
@@ -120,4 +137,18 @@ internal class VideoMediaAssembler(
             mediaType = "video/mp4"
         )
     }
+}
+
+internal fun resolveRecordedSegmentVideoFiles(
+    runId: Long,
+    segments: List<RecordedSegment>,
+    outputRoot: File
+): List<File> {
+    return segments
+        .sortedBy { it.segmentNumber }
+        .mapNotNull { segment ->
+            val rawVideoFile = File(outputRoot, "video_runs/run_${runId}_segment_${segment.segmentNumber}.mp4")
+            segment.file.takeIf { it.exists() && it.length() > 0L }
+                ?: rawVideoFile.takeIf { it.exists() && it.length() > 0L }
+        }
 }

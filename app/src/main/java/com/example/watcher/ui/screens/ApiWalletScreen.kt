@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import com.example.watcher.data.repository.ProviderConnectivitySnapshot
 import com.example.watcher.ui.viewmodel.ApiWalletDraft
 import com.example.watcher.ui.viewmodel.ApiWalletUiState
+import com.example.watcher.ui.viewmodel.AstConfigDraft
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -44,10 +45,14 @@ fun ApiWalletScreen(
     onCancelEditing: () -> Unit,
     onDraftChange: ((ApiWalletDraft) -> ApiWalletDraft) -> Unit,
     onAsrDraftChange: ((com.example.watcher.ui.viewmodel.AsrConfigDraft) -> com.example.watcher.ui.viewmodel.AsrConfigDraft) -> Unit,
+    onAstDraftChange: ((AstConfigDraft) -> AstConfigDraft) -> Unit,
     onSaveDraft: () -> Unit,
     onSaveAsrDraft: () -> Unit,
     onClearAsrConfig: () -> Unit,
     onTestAsrConfig: () -> Unit,
+    onSaveAstDraft: () -> Unit,
+    onClearAstConfig: () -> Unit,
+    onTestAstConfig: () -> Unit,
     onTestProvider: (String) -> Unit,
     onSetDefault: (String) -> Unit,
     onToggleEnabled: (String, Boolean) -> Unit,
@@ -180,6 +185,23 @@ fun ApiWalletScreen(
                     onSave = onSaveAsrDraft,
                     onClear = onClearAsrConfig,
                     onTest = onTestAsrConfig
+                )
+            }
+
+            item {
+                SectionTitle(
+                    title = "复杂语种转写（AST）",
+                    subtitle = "仅在一键录课中手动开启。AST 输出会进入同一套课堂字幕、知识树和快速问答链路。"
+                )
+            }
+
+            item {
+                AstConfigCard(
+                    state = uiState.astConfig,
+                    onDraftChange = onAstDraftChange,
+                    onSave = onSaveAstDraft,
+                    onClear = onClearAstConfig,
+                    onTest = onTestAstConfig
                 )
             }
         }

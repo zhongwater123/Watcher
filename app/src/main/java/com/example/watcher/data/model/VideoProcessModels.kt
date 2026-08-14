@@ -120,6 +120,16 @@ data class VideoProcessRun(
     val videoRefinementInputMode: String = "",
     @ColumnInfo(defaultValue = "")
     val reportPipelineStagesJson: String = "",
+    @ColumnInfo(defaultValue = "")
+    val aiTraceId: String = "",
+    @ColumnInfo(defaultValue = "")
+    val classroomKnowledgeTreeJson: String = "",
+    @ColumnInfo(defaultValue = "")
+    val classroomKnowledgeFrameRefsJson: String = "",
+    @ColumnInfo(defaultValue = "")
+    val classroomKnowledgeTreeStatus: String = "",
+    @ColumnInfo(defaultValue = "0")
+    val classroomKnowledgeTreeUpdatedAt: Long = 0L,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis()
 )
@@ -212,6 +222,7 @@ data class TimelineEventEntity(
         Index("runId"),
         Index("segmentIndex"),
         Index("timestamp"),
+        Index("globalStartMs"),
         Index(value = ["runId", "timestamp", "text"], unique = true)
     ]
 )
@@ -224,7 +235,179 @@ data class VideoSpeechTranscriptEntity(
     val displayTimestamp: String,
     val text: String,
     val isFinal: Boolean = true,
+    val globalStartMs: Long = timestamp,
+    val globalEndMs: Long = timestamp,
+    val definite: Boolean = isFinal,
+    val wordsJson: String = "",
+    val source: String = "legacy",
+    val asrLogId: String = "",
     val createdAt: Long = System.currentTimeMillis()
+)
+
+enum class ClassroomTranscriptWeightLevel(val value: String) {
+    Core("core"),
+    Important("important"),
+    Context("context");
+
+    companion object {
+        fun fromValue(value: String?): ClassroomTranscriptWeightLevel? {
+            return entries.firstOrNull { it.value == value }
+        }
+    }
+}
+
+enum class ClassroomInlineQuestionType(val value: String, val label: String) {
+    Explain("explain", "解释这段"),
+    Example("example", "举个例子"),
+    Why("why", "为什么这样");
+
+    companion object {
+        fun fromValue(value: String?): ClassroomInlineQuestionType {
+            return entries.firstOrNull { it.value == value } ?: Explain
+        }
+    }
+}
+
+@Entity(
+    tableName = "classroom_transcript_consumptions",
+    foreignKeys = [
+        ForeignKey(
+            entity = VideoProcessRun::class,
+            parentColumns = ["id"],
+            childColumns = ["runId"],
+            onDelete = ForeignKey.CASCADE
+        ),
+        ForeignKey(
+            entity = VideoSpeechTranscriptEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["transcriptId"],
+            onDelete = ForeignKey.CASCADE
+        )
+    ],
+    indices = [
+        Index(value = ["runId"]),
+        Index(value = ["transcriptId"], unique = true),
+        Index(value = ["selectionOrder"]),
+        Index(value = ["isAnswered"])
+    ]
+)
+data class ClassroomTranscriptConsumptionEntity(
+    @PrimaryKey(autoGenerate = true)
+    val id: Long = 0,
+    val runId: Long,
+    val transcriptId: Long,
+    val selectionOrder: Int = 0,
+    val weightLevel: String = "",
+    val isSelected: Boolean = false,
+    val isAnswered: Boolean = false,
+    val questionType: String = "",
+    val questionText: String = "",
+    val answerText: String = "",
+    val contextStartMs: Long = 0L,
+    val contextEndMs: Long = 0L,
+    val visualFrameTimestampMs: Long = 0L,
+    val visualFramePath: String = "",
+    val visualFrameStatus: String = "",
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis()
+)
+
+data class ClassroomTranscriptUiItem(
+    val key: String,
+    val runId: Long,
+    val transcriptId: Long?,
+    val timestampLabel: String,
+    val globalStartMs: Long,
+    val globalEndMs: Long,
+    val text: String,
+    val sourceText: String = "",
+    val selectionOrder: Int? = null,
+    val weightLevel: ClassroomTranscriptWeightLevel? = null,
+    val isSelected: Boolean = false,
+    val isAnswered: Boolean = false,
+    val answerText: String = ""
+)
+
+data class ClassroomInlineQuestionUiState(
+    val visible: Boolean = false,
+    val isLoading: Boolean = false,
+    val questionType: ClassroomInlineQuestionType? = null,
+    val answerText: String = "",
+    val errorMessage: String? = null,
+    val selectedTranscriptIds: List<Long> = emptyList(),
+    val visualFramePath: String = "",
+    val visualFrameTimestampMs: Long = 0L,
+    val visualFrameStatus: String = ""
+)
+
+enum class ClassroomNoteFollowupStatus(val value: String) {
+    Pending("pending"),
+    Running("running"),
+    Completed("completed"),
+    Failed("failed");
+
+    companion object {
+        fun fromValue(value: String?): ClassroomNoteFollowupStatus {
+            return entries.firstOrNull { it.value == value } ?: Pending
+        }
+    }
+}
+
+enum class ClassroomNoteFollowupContextStage(val value: String, val label: String) {
+    Draft("draft", "临时草稿"),
+    Outline("outline", "音频大纲"),
+    Summarizing("summarizing", "笔记生成中"),
+    Final("final", "最终笔记");
+
+    companion object {
+        fun fromValue(value: String?): ClassroomNoteFollowupContextStage {
+            return entries.firstOrNull { it.value == value } ?: Draft
+        }
+    }
+}
+
+data class ClassroomNoteFollowupSourceRef(
+    val type: String,
+    val text: String,
+    val startMs: Long? = null,
+    val endMs: Long? = null,
+    val refId: String = ""
+)
+
+@Entity(
+    tableName = "classroom_note_followups",
+    foreignKeys = [
+        ForeignKey(
+            entity = VideoProcessRun::class,
+            parentColumns = ["id"],
+            childColumns = ["runId"],
+            onDelete = ForeignKey.CASCADE
+        )
+    ],
+    indices = [Index("runId")]
+)
+data class ClassroomNoteFollowupEntity(
+    @PrimaryKey(autoGenerate = true)
+    val id: Long = 0,
+    val runId: Long,
+    val question: String,
+    val answer: String = "",
+    val status: String = ClassroomNoteFollowupStatus.Pending.value,
+    val contextStage: String = ClassroomNoteFollowupContextStage.Draft.value,
+    val sourceRefsJson: String = "",
+    val conversationContextIdsJson: String = "",
+    val rawResponse: String = "",
+    val errorMessage: String = "",
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis()
+)
+
+data class ClassroomNoteFollowupUiState(
+    val items: List<ClassroomNoteFollowupEntity> = emptyList(),
+    val activeRunId: Long? = null,
+    val inputText: String = "",
+    val isSubmitting: Boolean = false,
+    val errorMessage: String? = null
 )
 
 enum class VideoAudioAssetType(val value: String) {
@@ -285,7 +468,8 @@ enum class VideoRemoteAssetKind(val value: String) {
     FullMediaVideo("full_media_video"),
     SegmentAudio("segment_audio"),
     MasterAudio("master_audio"),
-    MergedSegmentVideo("merged_segment_video");
+    MergedSegmentVideo("merged_segment_video"),
+    ClassroomNoteMaterial("classroom_note_material");
 
     companion object {
         fun fromValue(value: String?): VideoRemoteAssetKind {
@@ -591,6 +775,12 @@ data class VideoProcessingStatus(
     val finalConclusion: String = "",
     val timelineEvents: List<VideoTimelineEvent> = emptyList(),
     val streamingBuffer: String = "",
+    val playbackPath: String? = null,
+    val markdownNote: String = "",
+    val structuredNoteJson: String = "",
+    val rawModelSummary: String = "",
+    val completedRunId: Long? = null,
+    val degradedReason: String? = null,
     val streamingEnabled: Boolean = false,
     val isStreamingActive: Boolean = false,
     val isRecordingActive: Boolean = false,
@@ -610,7 +800,29 @@ data class VideoProcessingStatus(
     val isSpeechListening: Boolean = false,
     val speechErrorMessage: String? = null,
     val recentSpeech: List<SpeechTranscriptEntry> = emptyList(),
-    val errorMessage: String? = null,
+    val realtimeTranscript: String = "",
+    val stableTranscript: String = "",
+    val realtimeInsights: List<String> = emptyList(),
+    val realtimeKnowledgeTree: ClassroomKnowledgeTree? = null,
+    val changedKnowledgeNodeIds: List<String> = emptyList(),
+    val newKnowledgeNodeIds: List<String> = emptyList(),
+    val realtimeKnowledgeTreeStatus: String = "",
+    val realtimeKnowledgeTreeProgress: ClassroomKnowledgeTreeProgress = ClassroomKnowledgeTreeProgress(),
+    val realtimeKnowledgeFrameRefs: List<ClassroomKnowledgeFrameRef> = emptyList(),
+    val realtimeConnectionState: String = "",
+    val realtimeAudioLagMs: Long = 0L,
+    val realtimeDroppedFrameCount: Int = 0,
+    val realtimeBackfillSegmentCount: Int = 0,
+    val realtimePendingFrameCount: Int = 0,
+    val realtimeAsrLogId: String = "",
+    val realtimeSpeechProvider: String = "",
+    val realtimeSpeechFallbackReason: String? = null,
+    val realtimeSpeechSessionId: String = "",
+      val realtimeTranscriptItems: List<ClassroomTranscriptUiItem> = emptyList(),
+      val inlineQuestionState: ClassroomInlineQuestionUiState = ClassroomInlineQuestionUiState(),
+      val classroomNoteFollowupState: ClassroomNoteFollowupUiState = ClassroomNoteFollowupUiState(),
+      val classroomNoteMaterials: List<VideoRemoteFileBindingEntity> = emptyList(),
+      val errorMessage: String? = null,
     val isBusy: Boolean = false,
     val isTaskSaving: Boolean = false,
     val micPermissionGranted: Boolean = false,

@@ -30,8 +30,12 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
 class WatcherApplication : Application() {
+    val llmWalletRepository: LlmWalletRepository by lazy {
+        LlmWalletRepository(this, AppDatabase.getDatabase(this).llmProviderDao())
+    }
+
     val agentFrameworkContainer: AgentFrameworkContainer by lazy {
-        AgentFrameworkContainer(this)
+        AgentFrameworkContainer(this, llmWalletRepository)
     }
 
     private val appScope = CoroutineScope(
@@ -71,16 +75,9 @@ class WatcherApplication : Application() {
 }
 
 class AgentFrameworkContainer(
-    application: Application
+    application: Application,
+    val llmWalletRepository: LlmWalletRepository
 ) {
-    private val database: AppDatabase by lazy {
-        AppDatabase.getDatabase(application)
-    }
-
-    val llmWalletRepository: LlmWalletRepository by lazy {
-        LlmWalletRepository(application, database.llmProviderDao())
-    }
-
     private val defaultBrainFactory: AppDefaultAgentBrainFactory by lazy {
         AppDefaultAgentBrainFactory(llmWalletRepository)
     }

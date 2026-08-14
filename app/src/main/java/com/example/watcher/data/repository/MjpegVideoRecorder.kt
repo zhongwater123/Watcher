@@ -26,6 +26,7 @@ import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 
 class MjpegVideoRecorder {
+    @Suppress("UNUSED_PARAMETER")
     suspend fun recordSegment(
         outputFile: File,
         durationSeconds: Int,

@@ -13,6 +13,88 @@ import java.nio.ByteBuffer
  */
 class AudioSegmentSlicer {
 
+    fun sliceMedia(
+        sourceFile: File,
+        startMs: Long,
+        endMs: Long,
+        outputFile: File
+    ): Boolean {
+        if (!sourceFile.exists() || sourceFile.length() == 0L) return false
+        if (startMs >= endMs) return false
+        outputFile.parentFile?.mkdirs()
+        outputFile.delete()
+
+        val extractor = MediaExtractor()
+        return try {
+            extractor.setDataSource(sourceFile.absolutePath)
+            val selectedTracks = mutableMapOf<Int, Int>()
+            val muxer = MediaMuxer(outputFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            var hasVideoTrack = false
+            for (index in 0 until extractor.trackCount) {
+                val format = extractor.getTrackFormat(index)
+                val mime = format.getString(MediaFormat.KEY_MIME).orEmpty()
+                if (mime.startsWith("video/") || mime.startsWith("audio/")) {
+                    val outputTrack = muxer.addTrack(format)
+                    selectedTracks[index] = outputTrack
+                    extractor.selectTrack(index)
+                    hasVideoTrack = hasVideoTrack || mime.startsWith("video/")
+                }
+            }
+            if (!hasVideoTrack || selectedTracks.isEmpty()) {
+                muxer.release()
+                return false
+            }
+            muxer.start()
+            extractor.seekTo(startMs * 1_000L, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+
+            val buffer = ByteBuffer.allocateDirect(BUFFER_SIZE)
+            val bufferInfo = MediaCodec.BufferInfo()
+            val firstPtsByTrack = mutableMapOf<Int, Long>()
+            val endUs = endMs * 1_000L
+            var samplesWritten = 0
+
+            while (true) {
+                val trackIndex = extractor.sampleTrackIndex
+                if (trackIndex < 0) break
+                val outputTrack = selectedTracks[trackIndex]
+                if (outputTrack == null) {
+                    extractor.advance()
+                    continue
+                }
+                val sampleTimeUs = extractor.sampleTime
+                if (sampleTimeUs > endUs) break
+                buffer.clear()
+                val sampleSize = extractor.readSampleData(buffer, 0)
+                if (sampleSize < 0) break
+                val firstPts = firstPtsByTrack.getOrPut(trackIndex) { sampleTimeUs }
+                bufferInfo.set(
+                    0,
+                    sampleSize,
+                    (sampleTimeUs - firstPts).coerceAtLeast(0L),
+                    extractor.sampleFlags
+                )
+                muxer.writeSampleData(outputTrack, buffer, bufferInfo)
+                samplesWritten++
+                extractor.advance()
+            }
+
+            runCatching { muxer.stop() }
+            runCatching { muxer.release() }
+
+            if (samplesWritten == 0) {
+                outputFile.delete()
+                false
+            } else {
+                true
+            }
+        } catch (e: Exception) {
+            outputFile.delete()
+            false
+        } finally {
+            extractor.release()
+        }
+    }
+
     /**
      * Extract a time-windowed audio slice from a continuous .m4a file.
      *

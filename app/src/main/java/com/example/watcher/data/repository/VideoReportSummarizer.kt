@@ -23,15 +23,27 @@ private const val TAG = "Watcher.Video.Summarizer"
 internal class VideoReportSummarizer(
     private val apiService: DoubaoApiService,
     private val planningModel: String,
-    private val apiKey: String
+    private val apiKey: String,
+    private val traceLogger: VideoAiTraceLogger
 ) {
 
     suspend fun summarize(
         task: VideoProcessTaskDraft,
         results: List<SegmentExecutionResult>,
         outlineMarkdown: String = "",
-        mergedChunkEvidence: List<VideoMergedChunkResult> = emptyList()
+        mergedChunkEvidence: List<VideoMergedChunkResult> = emptyList(),
+        traceId: String,
+        runId: Long
     ): VideoAnalysisResult {
+        val context = VideoAiTraceContext(
+            traceId = traceId,
+            runId = runId,
+            taskId = task.taskId,
+            node = "VideoReportSummarizer",
+            model = planningModel,
+            requestKind = "final_report"
+        )
+        val startedAt = System.currentTimeMillis()
         Log.d(TAG, "Summarize starting: segments=${results.size} hasOutline=${outlineMarkdown.isNotBlank()} chunks=${mergedChunkEvidence.size}")
         val payload = buildPayload(
             task = task,
@@ -50,16 +62,59 @@ internal class VideoReportSummarizer(
             )
         )
 
-        val rawText = retryRemoteCall {
-            apiService.analyzeIntent(
-                authorization = bearerToken(),
-                request = request
-            ).requireOutputText("video summary")
+        return try {
+            traceLogger.beginNode(
+                context,
+                aiTracePayload(
+                    "segmentCount" to results.size,
+                    "hasAudioOutline" to outlineMarkdown.isNotBlank(),
+                    "mergedChunkEvidenceCount" to mergedChunkEvidence.size
+                )
+            )
+            traceLogger.logPrompt(context, basePrompt = payload, renderedPrompt = payload)
+            traceLogger.logRequest(
+                context,
+                aiTracePayload(
+                    "model" to request.model,
+                    "payloadLength" to payload.length,
+                    "audioOutlineLength" to outlineMarkdown.length,
+                    "segmentNarrativesCount" to results.count { it.analysisResult.evidenceJson.isNotBlank() },
+                    "mergedVideoChunkEvidenceCount" to mergedChunkEvidence.size
+                )
+            )
+            val rawText = retryRemoteCall {
+                apiService.analyzeIntent(
+                    authorization = bearerToken(),
+                    request = request
+                ).requireOutputText("video summary")
+            }
+            val durationMs = System.currentTimeMillis() - startedAt
+            traceLogger.logResponse(context, rawText, durationMs)
+            val result = ModelOutputParser.parseVideoAnalysis(rawText)
+            val parseStatus = if (result.structuredNoteJson.isNotBlank() || result.markdownNote.isNotBlank()) {
+                "success"
+            } else {
+                "fallback"
+            }
+            traceLogger.logParsed(
+                context = context,
+                parsedSummary = result.summary,
+                parsedJson = result.structuredNoteJson.ifBlank {
+                    aiTracePayload(
+                        "parseStatus" to parseStatus,
+                        "summary" to result.summary,
+                        "timelineCount" to result.timelineEvents.size
+                    )
+                },
+                parseStatus = parseStatus
+            )
+            traceLogger.finishNode(context, durationMs)
+            Log.d(TAG, "Summarize complete: hasMarkdown=${result.markdownNote.isNotBlank()} structuredJson=${result.structuredNoteJson.isNotBlank()} timeline=${result.timelineEvents.size}")
+            result
+        } catch (error: Throwable) {
+            traceLogger.logError(context, error, System.currentTimeMillis() - startedAt)
+            throw error
         }
-
-        val result = ModelOutputParser.parseVideoAnalysis(rawText)
-        Log.d(TAG, "Summarize complete: hasMarkdown=${result.markdownNote.isNotBlank()} structuredJson=${result.structuredNoteJson.isNotBlank()} timeline=${result.timelineEvents.size}")
-        return result
     }
 
     fun combineSegmentResults(

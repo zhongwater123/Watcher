@@ -3,11 +3,14 @@ package com.example.watcher.data.repository
 import android.graphics.Bitmap
 import com.example.watcher.data.local.VideoAudioAssetDao
 import com.example.watcher.data.local.VideoSegmentRunDao
+import com.example.watcher.data.model.ClassroomRecordingInput
 import com.example.watcher.data.model.VideoProcessTaskDraft
 import com.example.watcher.data.model.VideoRemoteAssetKind
 import com.example.watcher.data.model.VideoRunStatus
 import com.example.watcher.data.model.VideoSegmentRun
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -41,6 +44,8 @@ internal class VideoSegmentRecorder(
         continuousAudioFile: File? = null,
         continuousAudioStartedAt: Long? = null,
         audioSlicer: AudioSegmentSlicer? = null,
+        recordingInput: ClassroomRecordingInput = ClassroomRecordingInput.LiveCamera,
+        suppressSegmentAudioRecorder: Boolean = false,
         shouldStopRequested: () -> Boolean = { false },
         onStatus: suspend (VideoExecutionStatusUpdate) -> Unit
     ): RecordedSegment {
@@ -79,21 +84,37 @@ internal class VideoSegmentRecorder(
             )
 
             val useContinuousAudio = continuousAudioFile != null && continuousAudioStartedAt != null && audioSlicer != null
+            val testVideoInput = recordingInput as? ClassroomRecordingInput.TestVideo
             val videoOnlyFile = File(outputRoot, "video_runs/run_${runId}_segment_${segmentNumber}.mp4")
             val segmentAudioFile = File(outputRoot, "video_runs/run_${runId}_segment_${segmentNumber}_audio.m4a")
-            val segmentAudioRecorder = if (!useContinuousAudio) ContinuousAudioRecorder() else null
+            val segmentAudioRecorder = if (!useContinuousAudio && testVideoInput == null && !suppressSegmentAudioRecorder) {
+                ContinuousAudioRecorder()
+            } else {
+                null
+            }
             val wallClockStartTime = segmentWindowStartedAt
             val audioStarted = segmentAudioRecorder?.start(segmentAudioFile) == true
             var audioResult: ContinuousAudioResult? = null
+            val testFrameProvider = testVideoInput?.let {
+                TestVideoFrameProvider(
+                    videoFile = File(it.localPath),
+                    startOffsetMs = startOffsetSeconds * 1_000L,
+                    wallClockStartedAtMs = wallClockStartTime
+                )
+            }
+            val frameProviderForRecording: () -> Bitmap? = testFrameProvider?.let { provider ->
+                { provider.currentFrame() }
+            } ?: latestFrameProvider
             val recording = try {
                 recorder.recordSegment(
                     outputFile = videoOnlyFile,
                     durationSeconds = actualDuration,
-                    frameProvider = latestFrameProvider,
+                    frameProvider = frameProviderForRecording,
                     audioEnabled = false,
                     shouldStopRequested = shouldStopRequested
                 )
             } finally {
+                testFrameProvider?.close()
                 if (audioStarted) {
                     audioResult = segmentAudioRecorder?.stop()
                 } else {
@@ -109,16 +130,76 @@ internal class VideoSegmentRecorder(
             var audioDiagnosticsJson = ""
             var hasAudio = recording.hasAudio
 
-            if (useContinuousAudio) {
+            if (testVideoInput != null) {
+                val audioStartMs = startOffsetSeconds * 1_000L
+                val effectiveRecordedDurationMs = recording.durationMs
+                    .takeIf { it > 0L }
+                    ?: (wallClockEndTime - wallClockStartTime).coerceAtLeast(1_000L)
+                val audioEndMs = (audioStartMs + effectiveRecordedDurationMs)
+                    .coerceAtLeast(audioStartMs + 1_000L)
+                val slicer = AudioSegmentSlicer()
+                val sourceSegmentFile = File(outputRoot, "video_runs/run_${runId}_segment_${segmentNumber}_original_merged.mp4")
+                val sourceSegmentSliced = withContext(Dispatchers.IO) {
+                    slicer.sliceMedia(
+                        sourceFile = File(testVideoInput.localPath),
+                        startMs = audioStartMs,
+                        endMs = audioEndMs,
+                        outputFile = sourceSegmentFile
+                    )
+                }
+                val sliced = withContext(Dispatchers.IO) {
+                    slicer.sliceAudio(
+                        sourceFile = File(testVideoInput.localPath),
+                        startMs = audioStartMs,
+                        endMs = audioEndMs,
+                        outputFile = segmentAudioFile
+                    )
+                }
+                audioDiagnosticsJson = "source=test_video, displayName=${testVideoInput.displayName}, startMs=$audioStartMs, endMs=$audioEndMs, originalMediaSlice=$sourceSegmentSliced"
+                if (sourceSegmentSliced && sourceSegmentFile.exists() && sourceSegmentFile.length() > 0L) {
+                    finalFile = sourceSegmentFile
+                    hasAudio = true
+                    if (sliced) {
+                        audioAssetPath = segmentAudioFile.absolutePath
+                    }
+                } else if (sliced) {
+                    audioAssetPath = segmentAudioFile.absolutePath
+                    val mergedFile = File(outputRoot, "video_runs/run_${runId}_segment_${segmentNumber}_merged.mp4")
+                    val merged = withContext(Dispatchers.IO) {
+                        slicer.mergeVideoAndAudio(videoOnlyFile, segmentAudioFile, mergedFile)
+                    }
+                    if (merged) {
+                        remoteFileResolver.recordLocalFileBinding(
+                            file = mergedFile,
+                            runId = runId,
+                            segmentRunId = segment.id,
+                            assetKind = VideoRemoteAssetKind.MergedSegmentVideo,
+                            mediaType = "video/mp4"
+                        )
+                        finalFile = mergedFile
+                        hasAudio = true
+                    } else {
+                        finalFile = videoOnlyFile
+                    }
+                } else {
+                    finalFile = videoOnlyFile
+                    hasAudio = false
+                }
+            } else if (useContinuousAudio) {
                 val audioStartMs = (wallClockStartTime - continuousAudioStartedAt!!).coerceAtLeast(0L)
                 val audioEndMs = (wallClockEndTime - continuousAudioStartedAt).coerceAtLeast(audioStartMs + 1000L)
                 val audioSliceFile = File(outputRoot, "video_runs/run_${runId}_segment_${segmentNumber}_audio.m4a")
-                val sliced = audioSlicer!!.sliceAudio(continuousAudioFile!!, audioStartMs, audioEndMs, audioSliceFile)
+                val slicer = audioSlicer!!
+                val sliced = withContext(Dispatchers.IO) {
+                    slicer.sliceAudio(continuousAudioFile!!, audioStartMs, audioEndMs, audioSliceFile)
+                }
 
                 if (sliced) {
                     audioAssetPath = audioSliceFile.absolutePath
                     val mergedFile = File(outputRoot, "video_runs/run_${runId}_segment_${segmentNumber}_merged.mp4")
-                    val merged = audioSlicer.mergeVideoAndAudio(videoOnlyFile, audioSliceFile, mergedFile)
+                    val merged = withContext(Dispatchers.IO) {
+                        slicer.mergeVideoAndAudio(videoOnlyFile, audioSliceFile, mergedFile)
+                    }
                     if (merged) {
                         remoteFileResolver.recordLocalFileBinding(
                             file = mergedFile,
@@ -138,18 +219,20 @@ internal class VideoSegmentRecorder(
             } else {
                 finalFile = videoOnlyFile
                 if (audioResult?.hasAudio == true) {
-                    val audioAsset = audioAssetBuilder.buildSegmentAudioAssetFromFile(
-                        runId = runId,
-                        segment = segment,
-                        audioFile = audioResult.file,
-                        expectedDurationMs = recording.durationMs.takeIf { it > 0L } ?: actualDuration * 1_000L,
-                        diagnosticsExtras = mapOf(
-                            "wallClockStartMs" to wallClockStartTime,
-                            "wallClockEndMs" to wallClockEndTime,
-                            "interrupted" to recording.interrupted,
-                            "audioStartedAtMs" to audioResult.startedAtMs
+                    val audioAsset = withContext(Dispatchers.IO) {
+                        audioAssetBuilder.buildSegmentAudioAssetFromFile(
+                            runId = runId,
+                            segment = segment,
+                            audioFile = audioResult.file,
+                            expectedDurationMs = recording.durationMs.takeIf { it > 0L } ?: actualDuration * 1_000L,
+                            diagnosticsExtras = mapOf(
+                                "wallClockStartMs" to wallClockStartTime,
+                                "wallClockEndMs" to wallClockEndTime,
+                                "interrupted" to recording.interrupted,
+                                "audioStartedAtMs" to audioResult.startedAtMs
+                            )
                         )
-                    )
+                    }
                     audioAssetDao.upsert(audioAsset)
                     audioAssetPath = audioAsset.localFilePath
                     audioDiagnosticsJson = audioAsset.diagnosticsJson
@@ -164,7 +247,7 @@ internal class VideoSegmentRecorder(
                 file = finalFile,
                 runId = runId,
                 segmentRunId = segment.id,
-                assetKind = if (useContinuousAudio && finalFile.name.endsWith("_merged.mp4")) {
+                assetKind = if (finalFile.name.endsWith("_merged.mp4")) {
                     VideoRemoteAssetKind.MergedSegmentVideo
                 } else {
                     VideoRemoteAssetKind.SegmentVideo

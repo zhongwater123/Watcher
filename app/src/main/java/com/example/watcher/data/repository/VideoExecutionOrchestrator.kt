@@ -5,6 +5,7 @@ import android.util.Log
 import com.example.watcher.data.local.TimelineEventDao
 import com.example.watcher.data.local.VideoProcessRunDao
 import com.example.watcher.data.local.VideoProcessTaskDao
+import com.example.watcher.data.model.ClassroomRecordingInput
 import com.example.watcher.data.model.RecordingScenario
 import com.example.watcher.data.model.TimelineEventEntity
 import com.example.watcher.data.model.VideoAnalysisResult
@@ -39,13 +40,15 @@ internal class VideoExecutionOrchestrator(
     private val chunkAnalyzer: VideoEvidenceChunkAnalyzer,
     private val reportRefiner: VideoReportRefiner,
     private val audioOutlineProcessor: AudioOutlineProcessor,
-    private val remoteFileResolver: VideoRemoteFileResolver
+    private val remoteFileResolver: VideoRemoteFileResolver,
+    private val traceLogger: VideoAiTraceLogger
 ) {
     suspend fun executeTask(
         draft: VideoProcessTaskDraft,
         streamingOutputEnabled: Boolean,
         latestFrameProvider: () -> Bitmap?,
         outputRoot: File,
+        recordingInput: ClassroomRecordingInput = ClassroomRecordingInput.LiveCamera,
         shouldStopRequested: () -> Boolean = { false },
         onStatus: suspend (VideoExecutionStatusUpdate) -> Unit
     ): VideoExecutionResult = coroutineScope {
@@ -69,10 +72,30 @@ internal class VideoExecutionOrchestrator(
             totalDurationSeconds = task.plannedDurationSeconds,
             segmentDurationSeconds = task.plannedSegmentDurationSeconds,
             captureIntervalSeconds = task.captureIntervalSeconds,
-            segmentCount = scheduledSegmentCount
+            segmentCount = scheduledSegmentCount,
+            fullMediaVideoSource = recordingInput.sourceId
         )
         val runId = runDao.upsert(run)
-        run = run.copy(id = runId)
+        val traceId = traceLogger.newTraceId()
+        run = run.copy(id = runId, aiTraceId = traceId)
+        runDao.upsert(run)
+        val orchestrationTrace = VideoAiTraceContext(
+            traceId = traceId,
+            runId = runId,
+            taskId = taskEntity.id,
+            node = "VideoExecutionOrchestrator",
+            requestKind = "video_process_run"
+        )
+        traceLogger.beginNode(
+            orchestrationTrace,
+            aiTracePayload(
+                "taskTitle" to taskEntity.title,
+                "recordingScenario" to task.recordingScenario,
+                "recordingInput" to recordingInput.sourceId,
+                "plannedSegmentCount" to scheduledSegmentCount,
+                "plannedDurationSeconds" to task.plannedDurationSeconds
+            )
+        )
 
         taskDao.upsert(
             taskEntity.copy(
@@ -107,6 +130,11 @@ internal class VideoExecutionOrchestrator(
         )
 
         val pipelineStages = mutableListOf<String>()
+        val finalMediaSource = if (recordingInput is ClassroomRecordingInput.TestVideo) {
+            recordingInput.sourceId
+        } else {
+            "split_audio_video_segments"
+        }
         fun recordStage(stage: String) {
             pipelineStages.add("${System.currentTimeMillis()}:$stage")
         }
@@ -132,6 +160,7 @@ internal class VideoExecutionOrchestrator(
                         task = task,
                         segmentCount = scheduledSegmentCount,
                         runId = runId,
+                        traceId = traceId,
                         streamingOutputEnabled = streamingOutputEnabled,
                         recordedSegmentCount = recordedSegmentCount,
                         analyzedSegmentCount = analyzedSegmentCount,
@@ -274,6 +303,7 @@ internal class VideoExecutionOrchestrator(
                     recordedDurationSeconds = recordedDurationSeconds,
                     segmentWindowStartedAt = segmentWindowStartedAt,
                     mediaClockStartedAt = runStartedAt,
+                    recordingInput = recordingInput,
                     shouldStopRequested = shouldStopRequested,
                     onStatus = onStatus
                 )
@@ -386,7 +416,8 @@ internal class VideoExecutionOrchestrator(
                     runId = runId,
                     audioFile = masterAudioFile,
                     task = task,
-                    durationSeconds = recordedDurationSeconds.get()
+                    durationSeconds = recordedDurationSeconds.get(),
+                    traceId = traceId
                 )
             }.getOrNull()
 
@@ -448,11 +479,12 @@ internal class VideoExecutionOrchestrator(
                 fullMediaPath = "",
                 fullMediaDurationMs = 0L,
                 fullMediaHasAudio = false,
-                fullMediaVideoSource = "split_audio_video_segments",
+                fullMediaVideoSource = finalMediaSource,
                 errorMessage = analyzerError?.message,
                 updatedAt = System.currentTimeMillis()
             )
             runDao.upsert(run)
+            traceLogger.finishNode(orchestrationTrace, System.currentTimeMillis() - now)
             onStatus(
                 VideoExecutionStatusUpdate(
                     stage = VideoRunStatus.Cancelled,
@@ -542,7 +574,7 @@ internal class VideoExecutionOrchestrator(
                 fullMediaDurationMs = validation.durationMs.takeIf { it > 0L }
                     ?: recordedDurationSeconds.get() * 1_000L,
                 fullMediaHasAudio = validation.hasAudio,
-                fullMediaVideoSource = "split_audio_video_segments",
+                fullMediaVideoSource = finalMediaSource,
                 audioEnhancementInfo = segmentResults.firstOrNull { it.audioEnhancementInfo.isNotBlank() }
                     ?.audioEnhancementInfo.orEmpty(),
                 errorMessage = null,
@@ -554,6 +586,7 @@ internal class VideoExecutionOrchestrator(
                 updatedAt = System.currentTimeMillis()
             )
             runDao.upsert(run)
+            traceLogger.finishNode(orchestrationTrace, System.currentTimeMillis() - now)
             onStatus(
                 VideoExecutionStatusUpdate(
                     stage = VideoRunStatus.CompletedDegraded,
@@ -561,6 +594,7 @@ internal class VideoExecutionOrchestrator(
                     segmentIndex = recordedSegmentCount.get(),
                     segmentCount = scheduledSegmentCount,
                     message = fallbackSummary,
+                    degradedReason = run.degradedReason,
                     templateLabel = task.templateLabel,
                     segmentDurationSeconds = task.plannedSegmentDurationSeconds,
                     captureIntervalSeconds = task.captureIntervalSeconds,
@@ -677,7 +711,8 @@ internal class VideoExecutionOrchestrator(
                     task = task,
                     chunkFile = chunkFile,
                     chunkIndex = index + 1,
-                    chunkCount = chunkFiles.size
+                    chunkCount = chunkFiles.size,
+                    traceId = traceId
                 ).also(evidence::add)
             }
             recordStage("segment_merge_completed")
@@ -699,7 +734,9 @@ internal class VideoExecutionOrchestrator(
                         task = task,
                         results = successfulSegmentResults,
                         outlineMarkdown = run.outlineMarkdown,
-                        mergedChunkEvidence = mergedChunkEvidence
+                        mergedChunkEvidence = mergedChunkEvidence,
+                        traceId = traceId,
+                        runId = runId
                     ).let { result ->
                         if (result.timelineEvents.isNotEmpty()) result
                         else result.copy(timelineEvents = allTimelineEvents)
@@ -739,7 +776,9 @@ internal class VideoExecutionOrchestrator(
                                     videoFileId = chunk.arkFileId!!,
                                     task = task,
                                     chunkIndex = idx + 1,
-                                    chunkCount = chunksWithFileIds.size
+                                    chunkCount = chunksWithFileIds.size,
+                                    traceId = traceId,
+                                    runId = runId
                                 )
                             }
                             current
@@ -886,7 +925,7 @@ internal class VideoExecutionOrchestrator(
                 fullMediaDurationMs = validation.durationMs.takeIf { it > 0L }
                     ?: recordedDurationSeconds.get() * 1_000L,
                 fullMediaHasAudio = validation.hasAudio,
-                fullMediaVideoSource = "split_audio_video_segments",
+                fullMediaVideoSource = finalMediaSource,
                 audioEnhancementInfo = segmentResults.firstOrNull { it.audioEnhancementInfo.isNotBlank() }
                     ?.audioEnhancementInfo.orEmpty(),
                 errorMessage = null,
@@ -902,6 +941,7 @@ internal class VideoExecutionOrchestrator(
                 updatedAt = System.currentTimeMillis()
             )
             runDao.upsert(run)
+            traceLogger.finishNode(orchestrationTrace, System.currentTimeMillis() - now)
             timelineEventDao.deleteByRunId(runId)
             timelineEventDao.insertAll(
                 finalResultWithFallback.timelineEvents.map { event ->
@@ -924,15 +964,18 @@ internal class VideoExecutionOrchestrator(
 
         onStatus(
             VideoExecutionStatusUpdate(
-                stage = VideoRunStatus.Completed,
+                stage = run.status,
                 runId = runId,
                 segmentIndex = recordedSegmentCount.get(),
                 segmentCount = scheduledSegmentCount,
-                message = if (shouldStopRequested() && recordedSegmentCount.get() < scheduledSegmentCount) {
-                    "Stopped manually, partial summary completed"
-                } else {
-                    "视频处理完成"
+                message = when {
+                    shouldStopRequested() && recordedSegmentCount.get() < scheduledSegmentCount ->
+                        "Stopped manually, partial summary completed"
+                    run.status == VideoRunStatus.CompletedDegraded ->
+                        run.degradedReason ?: "视频处理完成，但部分产物降级"
+                    else -> "视频处理完成"
                 },
+                degradedReason = run.degradedReason,
                 templateLabel = task.templateLabel,
                 segmentDurationSeconds = task.plannedSegmentDurationSeconds,
                 captureIntervalSeconds = task.captureIntervalSeconds,
@@ -975,6 +1018,19 @@ internal class VideoExecutionOrchestrator(
         }
 
         val failureMessage = error.toUserMessage("Execution failed.")
+        existingRun.aiTraceId.takeIf(String::isNotBlank)?.let { traceId ->
+            traceLogger.logError(
+                VideoAiTraceContext(
+                    traceId = traceId,
+                    runId = runId,
+                    taskId = existingRun.taskId,
+                    node = "VideoExecutionOrchestrator",
+                    segmentIndex = segmentIndex,
+                    requestKind = "video_process_run"
+                ),
+                error
+            )
+        }
         runDao.upsert(
             existingRun.copy(
                 status = VideoRunStatus.Failed,
@@ -1014,6 +1070,18 @@ internal class VideoExecutionOrchestrator(
             return
         }
 
+        existingRun.aiTraceId.takeIf(String::isNotBlank)?.let { traceId ->
+            traceLogger.finishNode(
+                VideoAiTraceContext(
+                    traceId = traceId,
+                    runId = runId,
+                    taskId = existingRun.taskId,
+                    node = "VideoExecutionOrchestrator",
+                    segmentIndex = segmentIndex,
+                    requestKind = "video_process_run"
+                )
+            )
+        }
         runDao.upsert(
             existingRun.copy(
                 status = VideoRunStatus.Cancelled,
@@ -1045,7 +1113,8 @@ internal class VideoExecutionOrchestrator(
         task: VideoProcessTaskDraft,
         chunkFile: File,
         chunkIndex: Int,
-        chunkCount: Int
+        chunkCount: Int,
+        traceId: String
     ): VideoMergedChunkResult {
         return try {
             val remoteFile = remoteFileResolver.resolveVideoFile(
@@ -1073,7 +1142,9 @@ internal class VideoExecutionOrchestrator(
                 fileId = remoteFile.fileId,
                 task = task,
                 chunkIndex = chunkIndex,
-                chunkCount = chunkCount
+                chunkCount = chunkCount,
+                traceId = traceId,
+                runId = runId
             )
             val parsed = ModelOutputParser.parseVideoAnalysis(rawText)
             VideoMergedChunkResult(

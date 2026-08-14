@@ -22,7 +22,8 @@ private const val TAG = "Watcher.Video.Analyzer"
 internal class VideoSegmentAnalyzer(
     private val apiService: DoubaoApiService,
     private val videoModel: String,
-    private val apiKey: String
+    private val apiKey: String,
+    private val traceLogger: VideoAiTraceLogger
 ) {
 
     suspend fun analyze(
@@ -31,8 +32,21 @@ internal class VideoSegmentAnalyzer(
         isMergedInput: Boolean,
         task: VideoProcessTaskDraft,
         segmentNumber: Int,
-        segmentCount: Int
+        segmentCount: Int,
+        traceId: String,
+        runId: Long,
+        inputMode: String
     ): VideoAnalysisResult {
+        val context = VideoAiTraceContext(
+            traceId = traceId,
+            runId = runId,
+            taskId = task.taskId,
+            node = "VideoSegmentAnalyzer",
+            segmentIndex = segmentNumber,
+            model = videoModel,
+            requestKind = inputMode
+        )
+        val startedAt = System.currentTimeMillis()
         val prompt = buildPrompt(task = task, segmentNumber = segmentNumber, segmentCount = segmentCount)
         Log.d(TAG, "Segment $segmentNumber/$segmentCount prompt built length=${prompt.length} merged=$isMergedInput")
         val contentItems = buildList {
@@ -50,23 +64,59 @@ internal class VideoSegmentAnalyzer(
             input = listOf(VideoMessage(role = "user", content = contentItems))
         )
 
-        Log.d(TAG, "Segment $segmentNumber API request sending model=$videoModel items=${contentItems.size}")
-        val rawText = doRetryRemoteCall {
-            apiService.analyzeVideo(
-                authorization = "Bearer $apiKey",
-                request = request
-            ).requireOutputText("video segment analysis")
+        return try {
+            traceLogger.beginNode(
+                context,
+                aiTracePayload(
+                    "fileId" to fileId,
+                    "audioFileId" to audioFileId,
+                    "isMergedInput" to isMergedInput,
+                    "inputMode" to inputMode,
+                    "segmentNumber" to segmentNumber,
+                    "segmentCount" to segmentCount
+                )
+            )
+            traceLogger.logPrompt(context, basePrompt = prompt, renderedPrompt = prompt)
+            traceLogger.logRequest(
+                context,
+                aiTracePayload(
+                    "model" to request.model,
+                    "contentItemTypes" to contentItems.joinToString(",") { it.type },
+                    "fileId" to fileId,
+                    "audioFileId" to audioFileId,
+                    "promptLength" to prompt.length
+                )
+            )
+            Log.d(TAG, "Segment $segmentNumber API request sending model=$videoModel items=${contentItems.size}")
+            val rawText = doRetryRemoteCall {
+                apiService.analyzeVideo(
+                    authorization = "Bearer $apiKey",
+                    request = request
+                ).requireOutputText("video segment analysis")
+            }
+            val durationMs = System.currentTimeMillis() - startedAt
+            Log.d(TAG, "Segment $segmentNumber API response length=${rawText.length} preview=${rawText.take(80)}")
+            traceLogger.logResponse(context, rawText, durationMs)
+            val summary = extractNarrativeSummary(rawText)
+            traceLogger.logParsed(
+                context = context,
+                parsedSummary = summary,
+                parsedJson = aiTracePayload("parseStatus" to "success", "summary" to summary),
+                parseStatus = "success"
+            )
+            traceLogger.finishNode(context, durationMs)
+            VideoAnalysisResult(
+                summary = summary,
+                conclusion = "",
+                timelineEvents = emptyList(),
+                rawResponse = rawText,
+                evidenceJson = rawText,
+                markdownNote = rawText
+            )
+        } catch (error: Throwable) {
+            traceLogger.logError(context, error, System.currentTimeMillis() - startedAt)
+            throw error
         }
-        Log.d(TAG, "Segment $segmentNumber API response length=${rawText.length} preview=${rawText.take(80)}")
-
-        return VideoAnalysisResult(
-            summary = extractNarrativeSummary(rawText),
-            conclusion = "",
-            timelineEvents = emptyList(),
-            rawResponse = rawText,
-            evidenceJson = rawText,
-            markdownNote = rawText
-        )
     }
 
     private fun buildPrompt(

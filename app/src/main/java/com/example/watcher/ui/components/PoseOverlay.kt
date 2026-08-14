@@ -30,8 +30,11 @@ val MOVE_RAINBOW_COLORS = listOf(
 )
 
 private const val LANDMARK_RADIUS = 6f
+private const val HIGHLIGHT_LANDMARK_RADIUS = 8f
 private const val CONNECTION_STROKE_WIDTH = 4f
+private const val HIGHLIGHT_CONNECTION_STROKE_WIDTH = 6f
 private const val VISIBILITY_THRESHOLD = 0.5f
+private val ACTIVE_LANDMARK_COLOR = Color(0xFF2F80FF)
 
 /**
  * Draws pose skeleton overlay on a Canvas that matches the image display area.
@@ -48,7 +51,9 @@ fun PoseOverlay(
     mirrorHorizontally: Boolean = false,
     imageAspectRatio: Float = 4f / 3f,
     moveColorIndex: Int = -1,  // -1 = default colors, >=0 = rainbow index for segmentation
-    visibilityThreshold: Float = VISIBILITY_THRESHOLD  // Override for stricter filtering
+    visibilityThreshold: Float = VISIBILITY_THRESHOLD,  // Override for stricter filtering
+    scaleToFill: Boolean = false,
+    highlightedLandmarkLabels: Set<String> = emptySet()
 ) {
     Canvas(modifier = modifier) {
         val canvasWidth = size.width
@@ -62,7 +67,21 @@ fun PoseOverlay(
         val offsetX: Float
         val offsetY: Float
 
-        if (imageAspectRatio > canvasAspect) {
+        if (scaleToFill) {
+            if (imageAspectRatio > canvasAspect) {
+                // Image is wider than canvas: full height, cropped horizontally
+                imageHeight = canvasHeight
+                imageWidth = canvasHeight * imageAspectRatio
+                offsetX = (canvasWidth - imageWidth) / 2f
+                offsetY = 0f
+            } else {
+                // Image is taller than canvas: full width, cropped vertically
+                imageWidth = canvasWidth
+                imageHeight = canvasWidth / imageAspectRatio
+                offsetX = 0f
+                offsetY = (canvasHeight - imageHeight) / 2f
+            }
+        } else if (imageAspectRatio > canvasAspect) {
             // Image is wider than canvas: full width, letterboxed vertically
             imageWidth = canvasWidth
             imageHeight = canvasWidth / imageAspectRatio
@@ -101,22 +120,29 @@ fun PoseOverlay(
                     return@forEach
                 }
 
+                val connectionHighlighted = POSE_LANDMARK_LABELS[startIdx] in highlightedLandmarkLabels &&
+                    POSE_LANDMARK_LABELS[endIdx] in highlightedLandmarkLabels
                 drawLine(
-                    color = connectionColor,
+                    color = if (connectionHighlighted) ACTIVE_LANDMARK_COLOR.copy(alpha = 0.9f) else connectionColor,
                     start = mapPoint(start),
                     end = mapPoint(end),
-                    strokeWidth = CONNECTION_STROKE_WIDTH,
+                    strokeWidth = if (connectionHighlighted) HIGHLIGHT_CONNECTION_STROKE_WIDTH else CONNECTION_STROKE_WIDTH,
                     cap = StrokeCap.Round
                 )
             }
 
             // Draw landmarks
-            poseSet.normalizedLandmarks.forEach { landmark ->
+            poseSet.normalizedLandmarks.forEachIndexed { landmarkIndex, landmark ->
                 if (landmark.visibility >= visibilityThreshold) {
-                    val pointColor = color.copy(alpha = landmark.visibility.coerceIn(0.4f, 1f))
+                    val highlighted = POSE_LANDMARK_LABELS[landmarkIndex] in highlightedLandmarkLabels
+                    val pointColor = if (highlighted) {
+                        ACTIVE_LANDMARK_COLOR.copy(alpha = landmark.visibility.coerceIn(0.55f, 1f))
+                    } else {
+                        color.copy(alpha = landmark.visibility.coerceIn(0.4f, 1f))
+                    }
                     drawCircle(
                         color = pointColor,
-                        radius = LANDMARK_RADIUS,
+                        radius = if (highlighted) HIGHLIGHT_LANDMARK_RADIUS else LANDMARK_RADIUS,
                         center = mapPoint(landmark)
                     )
                 }
@@ -124,3 +150,39 @@ fun PoseOverlay(
         }
     }
 }
+
+private val POSE_LANDMARK_LABELS = mapOf(
+    0 to "nose",
+    1 to "left_eye_inner",
+    2 to "left_eye",
+    3 to "left_eye_outer",
+    4 to "right_eye_inner",
+    5 to "right_eye",
+    6 to "right_eye_outer",
+    7 to "left_ear",
+    8 to "right_ear",
+    9 to "mouth_left",
+    10 to "mouth_right",
+    11 to "left_shoulder",
+    12 to "right_shoulder",
+    13 to "left_elbow",
+    14 to "right_elbow",
+    15 to "left_wrist",
+    16 to "right_wrist",
+    17 to "left_pinky",
+    18 to "right_pinky",
+    19 to "left_index",
+    20 to "right_index",
+    21 to "left_thumb",
+    22 to "right_thumb",
+    23 to "left_hip",
+    24 to "right_hip",
+    25 to "left_knee",
+    26 to "right_knee",
+    27 to "left_ankle",
+    28 to "right_ankle",
+    29 to "left_heel",
+    30 to "right_heel",
+    31 to "left_foot_index",
+    32 to "right_foot_index"
+)

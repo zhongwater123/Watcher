@@ -32,9 +32,12 @@ internal class HistoryDelegate(
 ) {
     private val _selectedRecord = MutableStateFlow<HistoryRecordSelection?>(null)
     private val _selectedDetail = MutableStateFlow<HistoryRecordDetail?>(null)
+    private val _activeVideoHistoryReportDetail = MutableStateFlow<VideoHistoryDetail?>(null)
 
     val selectedHistoryRecord: StateFlow<HistoryRecordSelection?> = _selectedRecord.asStateFlow()
     val selectedHistoryDetail: StateFlow<HistoryRecordDetail?> = _selectedDetail.asStateFlow()
+    val activeVideoHistoryReportDetail: StateFlow<VideoHistoryDetail?> =
+        _activeVideoHistoryReportDetail.asStateFlow()
 
     fun startObserving() {
         observeSelectedHistoryDetail()
@@ -43,6 +46,27 @@ internal class HistoryDelegate(
 
     fun selectHistoryRecord(selection: HistoryRecordSelection?) {
         _selectedRecord.value = selection
+    }
+
+    fun openVideoHistoryReport(selection: HistoryRecordSelection) {
+        if (selection.type != HistoryRecordType.VideoAnalysis) return
+        scope.launch {
+            _activeVideoHistoryReportDetail.value =
+                historyRepository.getFullVideoHistoryDetail(selection.recordId)
+        }
+    }
+
+    fun closeVideoHistoryReport() {
+        _activeVideoHistoryReportDetail.value = null
+    }
+
+    fun loadFullHistoryDetail(
+        selection: HistoryRecordSelection,
+        onResult: (HistoryRecordDetail?) -> Unit
+    ) {
+        scope.launch {
+            onResult(historyRepository.getFullHistoryDetail(selection))
+        }
     }
 
     fun deleteHistoryRecord(selection: HistoryRecordSelection) {
@@ -60,6 +84,9 @@ internal class HistoryDelegate(
             ) {
                 selectedVideoRunId.value = null
                 selectedVideoRunEvents.value = emptyList()
+            }
+            if (_activeVideoHistoryReportDetail.value?.selection == selection) {
+                _activeVideoHistoryReportDetail.value = null
             }
         }
     }

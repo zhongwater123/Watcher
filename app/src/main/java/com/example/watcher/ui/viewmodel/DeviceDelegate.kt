@@ -54,6 +54,7 @@ internal class DeviceDelegate(
     private var deviceProvisionJob: Job? = null
     private var runtimeRediscoveryJob: Job? = null
     private var lastRuntimeRediscoveryAttemptAt: Long = 0L
+    private var lastAppliedDeviceSettings: VideoStreamSettings? = null
 
     fun consumeSettingsNotice() { _settingsNotice.value = null }
 
@@ -62,20 +63,21 @@ internal class DeviceDelegate(
     fun saveVideoStreamSettings(settings: VideoStreamSettings) {
         scope.launch {
             val normalized = settings.normalized()
+            val previous = settingsDao.getSettingsSync()?.normalized()
             if (normalized.deviceProfile == VideoStreamSettings.DEVICE_PROFILE_MJPEG_ONLY) {
                 _settingsNotice.value = "Generic MJPEG mode skips light and camera control commands."
             }
             settingsDao.insert(normalized)
-            onReconnectStream()
+            if (normalized.requiresStreamReconnectComparedTo(previous)) {
+                onReconnectStream()
+            }
         }
     }
 
     fun initializeVideoSettings() {
         scope.launch {
             val currentSettings = settingsDao.getSettingsSync()
-            if (currentSettings == null) {
-                settingsDao.insert(VideoStreamSettings())
-            } else {
+            if (currentSettings != null) {
                 migrateChangeDetectionDefaultsIfNeeded(currentSettings)
                 migrateResolutionDefaultsIfNeeded(currentSettings)
             }
@@ -83,8 +85,14 @@ internal class DeviceDelegate(
     }
 
     suspend fun applySettings(settings: VideoStreamSettings) {
-        runCatching { streamDeviceCoordinator.applySettings(settings) }
+        val normalized = settings.normalized()
+        if (!normalized.requiresStreamReconnectComparedTo(lastAppliedDeviceSettings)) {
+            lastAppliedDeviceSettings = normalized
+            return
+        }
+        runCatching { streamDeviceCoordinator.applySettings(normalized) }
             .onSuccess { outcome ->
+                lastAppliedDeviceSettings = normalized
                 outcome.persistedSettings?.let { settingsDao.insert(it) }
                 if (!outcome.notice.isNullOrBlank()) {
                     _settingsNotice.value = outcome.notice
@@ -313,7 +321,7 @@ internal class DeviceDelegate(
                     directInfo?.isStaMode == true -> return@withTimeoutOrNull ProvisionReconnectOutcome(
                         discoveredDevice = directInfo.toDiscoveredDevice(currentSettings.normalized()), deviceInfo = directInfo
                     )
-                    directInfo?.isProvisioningFailureFallback() == true -> return@withTimeoutOrNull ProvisionReconnectOutcome(
+                    directInfo?.isProvisioningFailureFallback == true -> return@withTimeoutOrNull ProvisionReconnectOutcome(
                         deviceInfo = directInfo, failureMessage = buildProvisionFailureMessage(directInfo)
                     )
                 }
@@ -327,7 +335,7 @@ internal class DeviceDelegate(
                     val refreshedInfo = runCatching { DeviceProvisionCoordinator(found.toBaseUrl()).fetchDeviceInfo() }.getOrNull()
                     when {
                         refreshedInfo?.isStaMode == true -> return@withTimeoutOrNull ProvisionReconnectOutcome(discoveredDevice = found, deviceInfo = refreshedInfo)
-                        refreshedInfo?.isProvisioningFailureFallback() == true -> return@withTimeoutOrNull ProvisionReconnectOutcome(discoveredDevice = found, deviceInfo = refreshedInfo, failureMessage = buildProvisionFailureMessage(refreshedInfo))
+                        refreshedInfo?.isProvisioningFailureFallback == true -> return@withTimeoutOrNull ProvisionReconnectOutcome(discoveredDevice = found, deviceInfo = refreshedInfo, failureMessage = buildProvisionFailureMessage(refreshedInfo))
                         else -> return@withTimeoutOrNull ProvisionReconnectOutcome(discoveredDevice = found)
                     }
                 }
@@ -416,7 +424,7 @@ private data class ProvisionReconnectOutcome(
 )
 
 private fun buildProvisionStatusMessage(info: DeviceRuntimeInfo): String = when {
-    info.isProvisioningFailureFallback() -> buildProvisionFailureMessage(info)
+    info.isProvisioningFailureFallback -> buildProvisionFailureMessage(info)
     info.isApMode -> "Device is in hotspot provisioning mode. Submit target Wi-Fi first."
     else -> "Device is on ${info.staSsid.ifBlank { "external Wi-Fi" }} at ${info.ip}."
 }
@@ -457,9 +465,6 @@ private fun buildRuntimeRediscoveryFailureMessage(mode: ProvisionRediscoveryMode
     else ->
         "The camera address may have changed, but it was not found on the current LAN yet. You can rescan devices manually."
 }
-
-private fun DeviceRuntimeInfo.isProvisioningFailureFallback(): Boolean =
-    isApMode && wifiFallbackToAp && hasWifiConnectFailure
 
 private fun DeviceRuntimeInfo.toDiscoveredDevice(settings: VideoStreamSettings): DiscoveredStreamDevice =
     DiscoveredStreamDevice(

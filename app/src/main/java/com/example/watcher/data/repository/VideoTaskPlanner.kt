@@ -14,18 +14,74 @@ import com.example.watcher.data.remote.Message
 internal class VideoTaskPlanner(
     private val apiService: DoubaoApiService,
     private val planningModel: String,
-    private val apiKey: String
+    private val apiKey: String,
+    private val traceLogger: VideoAiTraceLogger
 ) {
     suspend fun planVideoTask(userInput: String, frame: Bitmap?): Result<VideoTaskPlan> {
-        return runCatching {
+        val traceId = traceLogger.newTraceId()
+        val context = VideoAiTraceContext(
+            traceId = traceId,
+            node = "VideoTaskPlanner",
+            model = planningModel,
+            requestKind = if (frame != null) "image_planning" else "text_planning"
+        )
+        val startedAt = System.currentTimeMillis()
+        return try {
             requireApiKey()
-            val response = requestPlanningResponse(userInput, frame)
+            val basePrompt = buildStructuredPlanningPrompt()
+            val renderedPrompt = "$basePrompt\n\nUSER_INPUT:\n$userInput"
+            traceLogger.beginNode(
+                context,
+                aiTracePayload(
+                    "hasCurrentFrame" to (frame != null),
+                    "userInputLength" to userInput.length
+                )
+            )
+            traceLogger.logPrompt(
+                context = context,
+                basePrompt = basePrompt,
+                renderedPrompt = renderedPrompt
+            )
+            traceLogger.logRequest(
+                context = context,
+                requestPayloadJson = aiTracePayload(
+                    "model" to planningModel,
+                    "hasCurrentFrame" to (frame != null),
+                    "userInputLength" to userInput.length,
+                    "basePromptLength" to basePrompt.length
+                ),
+                promptText = renderedPrompt
+            )
+            val response = requestPlanningResponse(userInput, frame, basePrompt)
             val content = response.requireOutputText("video task planning")
-            ModelOutputParser.parseVideoTaskPlan(content, userInput)
+            val durationMs = System.currentTimeMillis() - startedAt
+            traceLogger.logResponse(context, content, durationMs)
+            val parsed = ModelOutputParser.parseVideoTaskPlan(content, userInput)
+            traceLogger.logParsed(
+                context = context,
+                parsedSummary = parsed.title,
+                parsedJson = aiTracePayload(
+                    "title" to parsed.title,
+                    "taskCategory" to parsed.taskCategory.orEmpty(),
+                    "segmentCount" to parsed.segmentCount,
+                    "recordingDurationSeconds" to parsed.recordingDurationSeconds,
+                    "segmentDurationSeconds" to parsed.segmentDurationSeconds
+                ),
+                parseStatus = "success"
+            )
+            traceLogger.finishNode(context, durationMs)
+            Result.success(parsed)
+        } catch (error: Throwable) {
+            traceLogger.logError(context, error, System.currentTimeMillis() - startedAt)
+            Result.failure(error)
         }
     }
 
-    private suspend fun requestPlanningResponse(userInput: String, frame: Bitmap?): DoubaoResponse {
+    private suspend fun requestPlanningResponse(
+        userInput: String,
+        frame: Bitmap?,
+        basePrompt: String
+    ): DoubaoResponse {
         return if (frame != null) {
             apiService.analyzeImage(
                 authorization = bearerToken(),
@@ -37,7 +93,7 @@ internal class VideoTaskPlanner(
                             content = listOf(
                                 ImageContentItem(
                                     type = "input_text",
-                                    text = buildStructuredPlanningPrompt()
+                                    text = basePrompt
                                 )
                             )
                         ),
@@ -59,7 +115,7 @@ internal class VideoTaskPlanner(
                             content = listOf(
                                 ContentItem(
                                     type = "input_text",
-                                    text = buildStructuredPlanningPrompt()
+                                    text = basePrompt
                                 )
                             )
                         ),

@@ -7,6 +7,7 @@ data class MonitorStatus(
     val lastResult: CheckResult = CheckResult.NONE,
     val lastSummary: String = "",
     val lastReason: String = "",
+    val lastRemark: String = "",
     val lastConfidence: Float? = null,
     val alertCount: Int = 0,
     val warningCount: Int = 0,
@@ -49,6 +50,7 @@ data class MonitorDecision(
     val result: CheckResult,
     val summary: String,
     val reason: String = "",
+    val remark: String = "",
     val confidence: Float? = null,
     val rawResponse: String = ""
 )

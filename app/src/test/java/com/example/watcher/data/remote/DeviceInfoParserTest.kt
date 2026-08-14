@@ -59,4 +59,36 @@ class DeviceInfoParserTest {
         assertEquals(3, parsed.wifi_connect_status)
         assertEquals(8, parsed.wifi_ssid_bytes)
     }
+
+    @Test
+    fun parseDeviceInfoResponseReadsApFallbackAfterSavedWifiFailure() {
+        val payload = """
+            {
+              "device_id": "70B5F204A7AC",
+              "mode": "ap",
+              "ap_ssid": "ESP32CAM-04A7AC",
+              "ap_ip": "192.168.4.1",
+              "wifi_configured": true,
+              "sta_ssid": "HomeWiFi",
+              "ip": "192.168.4.1",
+              "http_port": 80,
+              "stream_port": 81,
+              "discovery_port": 32108,
+              "wifi_connect_result": "wifi_connect_failed",
+              "wifi_connect_status": 1,
+              "wifi_disconnect_reason": 201,
+              "wifi_fallback_to_ap": true
+            }
+        """.trimIndent()
+
+        val parsed = parseDeviceInfoResponse(payload)
+
+        assertEquals("70B5F204A7AC", parsed.device_id)
+        assertEquals("ap", parsed.mode)
+        assertTrue(parsed.wifi_configured)
+        assertEquals("wifi_connect_failed", parsed.wifi_connect_result)
+        assertEquals(1, parsed.wifi_connect_status)
+        assertEquals(201, parsed.wifi_disconnect_reason)
+        assertTrue(parsed.wifi_fallback_to_ap)
+    }
 }

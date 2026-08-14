@@ -54,6 +54,10 @@
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize"
             android:theme="@style/Theme.Watcher" />
         <activity
+            android:name=".BackScreenPushActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Watcher" />
+        <activity
             android:name=".LocalAgentActivity"
             android:exported="false"
             android:theme="@style/Theme.Watcher" />
@@ -67,6 +71,10 @@
             android:theme="@style/Theme.Watcher" />
         <activity
             android:name=".DigitalLifeCardActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Watcher" />
+        <activity
+            android:name=".FitnessCompanionActivity"
             android:exported="false"
             android:theme="@style/Theme.Watcher" />
         <activity

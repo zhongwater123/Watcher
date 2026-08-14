@@ -1,0 +1,996 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Watcher | 双视角 AI 感知系统</title>
+  <style>
+    :root {
+      --ink: #15171a;
+      --muted: #666b73;
+      --soft: #f4f5f7;
+      --line: #e4e7ec;
+      --panel: rgba(255, 255, 255, 0.82);
+      --blue: #7d8cff;
+      --green: #7ccf7a;
+      --gold: #d5a94f;
+      --black: #0c0d0f;
+      --radius: 8px;
+      --shadow: 0 24px 70px rgba(20, 24, 32, 0.12);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 12% 5%, rgba(124, 207, 122, 0.14), transparent 24rem),
+        radial-gradient(circle at 84% 0%, rgba(125, 140, 255, 0.16), transparent 26rem),
+        linear-gradient(180deg, #ffffff 0%, #f7f8fa 42%, #eef1f4 100%);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      letter-spacing: 0;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    img {
+      display: block;
+      max-width: 100%;
+    }
+
+    .shell {
+      width: min(1180px, calc(100% - 40px));
+      margin: 0 auto;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      border-bottom: 1px solid rgba(228, 231, 236, 0.8);
+      background: rgba(255, 255, 255, 0.82);
+      backdrop-filter: blur(18px);
+    }
+
+    .topbar-inner {
+      min-height: 64px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 700;
+    }
+
+    .brand-mark {
+      width: 34px;
+      height: 34px;
+      border: 1px solid #cfd3da;
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(145deg, #ffffff, #e9ecef);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+    }
+
+    .brand-mark::before {
+      content: "";
+      width: 14px;
+      height: 14px;
+      border: 3px solid #20242a;
+      border-radius: 50%;
+      box-shadow: 0 0 0 4px rgba(125, 140, 255, 0.16);
+    }
+
+    .nav {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: #3f444d;
+      font-size: 14px;
+    }
+
+    .nav a {
+      padding: 8px 10px;
+      border-radius: 8px;
+    }
+
+    .nav a:hover {
+      background: #eff1f5;
+    }
+
+    .hero {
+      min-height: calc(100vh - 64px);
+      display: grid;
+      align-items: center;
+      padding: 72px 0 56px;
+    }
+
+    .hero-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 0.92fr) minmax(420px, 1.08fr);
+      gap: 44px;
+      align-items: center;
+    }
+
+    .kicker {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 11px;
+      border: 1px solid #dde2ea;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.74);
+      color: #3c424a;
+      font-size: 13px;
+      font-weight: 650;
+      box-shadow: 0 12px 28px rgba(20, 24, 32, 0.06);
+    }
+
+    .pulse {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 0 6px rgba(124, 207, 122, 0.2);
+    }
+
+    h1 {
+      margin: 28px 0 18px;
+      font-size: clamp(42px, 6vw, 78px);
+      line-height: 0.98;
+      letter-spacing: 0;
+    }
+
+    .hero-copy {
+      max-width: 620px;
+      color: #4d535c;
+      font-size: 18px;
+      line-height: 1.8;
+    }
+
+    .hero-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 30px;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px;
+      padding: 0 17px;
+      border-radius: 8px;
+      border: 1px solid #d8dde6;
+      background: #ffffff;
+      font-weight: 680;
+      box-shadow: 0 12px 34px rgba(20, 24, 32, 0.08);
+    }
+
+    .btn.primary {
+      color: #ffffff;
+      background: var(--black);
+      border-color: var(--black);
+    }
+
+    .hero-visual {
+      position: relative;
+      padding: 14px;
+      border: 1px solid rgba(220, 224, 231, 0.9);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.68);
+      box-shadow: var(--shadow);
+    }
+
+    .hero-visual img {
+      width: 100%;
+      aspect-ratio: 1 / 1.08;
+      object-fit: cover;
+      border-radius: 7px;
+    }
+
+    .spec-strip {
+      position: absolute;
+      right: 26px;
+      bottom: 26px;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      max-width: 84%;
+    }
+
+    .spec-pill {
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: rgba(12, 13, 15, 0.82);
+      color: #fff;
+      font-size: 12px;
+      backdrop-filter: blur(12px);
+    }
+
+    section {
+      padding: 76px 0;
+    }
+
+    .section-head {
+      max-width: 780px;
+      margin-bottom: 30px;
+    }
+
+    .eyebrow {
+      margin-bottom: 10px;
+      color: #717780;
+      font-size: 13px;
+      font-weight: 750;
+      text-transform: uppercase;
+    }
+
+    h2 {
+      margin: 0;
+      font-size: clamp(28px, 4vw, 46px);
+      line-height: 1.12;
+      letter-spacing: 0;
+    }
+
+    .lead {
+      margin: 16px 0 0;
+      color: #555c66;
+      font-size: 17px;
+      line-height: 1.8;
+    }
+
+    .three-layer {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .layer {
+      min-height: 300px;
+      padding: 24px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+      box-shadow: 0 18px 45px rgba(20, 24, 32, 0.07);
+    }
+
+    .layer-number {
+      width: 38px;
+      height: 38px;
+      display: grid;
+      place-items: center;
+      margin-bottom: 22px;
+      border-radius: 8px;
+      background: #15171a;
+      color: #fff;
+      font-weight: 800;
+    }
+
+    .layer:nth-child(2) .layer-number {
+      background: var(--blue);
+    }
+
+    .layer:nth-child(3) .layer-number {
+      background: var(--green);
+      color: #13220f;
+    }
+
+    .layer h3,
+    .feature h3,
+    .scenario h3,
+    .path-step h3 {
+      margin: 0 0 12px;
+      font-size: 21px;
+      letter-spacing: 0;
+    }
+
+    .layer p,
+    .feature p,
+    .scenario p,
+    .path-step p {
+      margin: 0;
+      color: #5b626c;
+      line-height: 1.75;
+    }
+
+    .quote-band {
+      padding: 38px;
+      border-radius: 8px;
+      background: #111317;
+      color: #fff;
+      box-shadow: var(--shadow);
+    }
+
+    .quote-band p {
+      max-width: 920px;
+      margin: 0;
+      font-size: clamp(24px, 4vw, 42px);
+      line-height: 1.35;
+      font-weight: 760;
+      letter-spacing: 0;
+    }
+
+    .quote-band span {
+      display: block;
+      margin-top: 18px;
+      color: #b9c0cb;
+      font-size: 15px;
+      line-height: 1.7;
+    }
+
+    .big-question {
+      margin-top: 26px;
+      padding: 28px;
+      border: 1px solid #d9dee7;
+      border-radius: 8px;
+      background: linear-gradient(135deg, rgba(255, 255, 255, 0.9), rgba(239, 242, 247, 0.9));
+      box-shadow: 0 18px 46px rgba(20, 24, 32, 0.08);
+    }
+
+    .big-question p {
+      margin: 0;
+      color: #171a1f;
+      font-size: clamp(23px, 3.2vw, 36px);
+      line-height: 1.38;
+      font-weight: 760;
+      letter-spacing: 0;
+    }
+
+    .split {
+      display: grid;
+      grid-template-columns: minmax(0, 0.92fr) minmax(420px, 1.08fr);
+      gap: 34px;
+      align-items: center;
+    }
+
+    .media-panel {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      background: #fff;
+      box-shadow: var(--shadow);
+    }
+
+    .media-panel img {
+      width: 100%;
+      aspect-ratio: 1 / 1.03;
+      object-fit: cover;
+    }
+
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 22px;
+    }
+
+    .feature {
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.76);
+    }
+
+    .comparison {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+      margin-top: 26px;
+    }
+
+    .compare-card {
+      padding: 24px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.78);
+      box-shadow: 0 18px 42px rgba(20, 24, 32, 0.07);
+    }
+
+    .compare-card.ai-eye {
+      border-color: #cfe8cf;
+      background: linear-gradient(180deg, rgba(245, 251, 245, 0.96), rgba(255, 255, 255, 0.82));
+    }
+
+    .compare-card h3 {
+      margin: 0 0 16px;
+      font-size: 24px;
+      letter-spacing: 0;
+    }
+
+    .compare-card ul {
+      margin: 0;
+      padding-left: 20px;
+      color: #535a64;
+      line-height: 1.9;
+    }
+
+    .tag {
+      display: inline-flex;
+      margin-bottom: 14px;
+      padding: 6px 8px;
+      border-radius: 8px;
+      background: #eef0ff;
+      color: #525fcb;
+      font-size: 12px;
+      font-weight: 760;
+    }
+
+    .tag.green {
+      background: #edf9ed;
+      color: #397d3c;
+    }
+
+    .tag.gold {
+      background: #fbf5e7;
+      color: #8b671b;
+    }
+
+    .scenarios {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .scenario {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.78);
+      overflow: hidden;
+      box-shadow: 0 18px 42px rgba(20, 24, 32, 0.07);
+    }
+
+    .scenario img {
+      width: 100%;
+      aspect-ratio: 1.12 / 1;
+      object-fit: cover;
+    }
+
+    .scenario-body {
+      padding: 22px;
+    }
+
+    .position-showcase {
+      display: grid;
+      grid-template-columns: minmax(0, 0.98fr) minmax(380px, 0.82fr);
+      gap: 28px;
+      align-items: center;
+      padding: 24px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.78);
+      box-shadow: var(--shadow);
+    }
+
+    .position-showcase img {
+      width: 100%;
+      aspect-ratio: 1 / 1.02;
+      object-fit: cover;
+      border-radius: 8px;
+    }
+
+    .position-copy {
+      padding: 8px 0;
+    }
+
+    .position-copy p {
+      margin: 0 0 16px;
+      color: #555c66;
+      font-size: 17px;
+      line-height: 1.82;
+    }
+
+    .position-copy p:last-child {
+      margin-bottom: 0;
+    }
+
+    .path {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .path-step {
+      position: relative;
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.8);
+      min-height: 220px;
+    }
+
+    .path-step strong {
+      display: block;
+      margin-bottom: 22px;
+      color: #a0a6af;
+      font-size: 13px;
+    }
+
+    .gallery {
+      display: grid;
+      grid-template-columns: 1.2fr 0.8fr 0.8fr;
+      gap: 12px;
+    }
+
+    .gallery figure {
+      margin: 0;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    .gallery figure:first-child {
+      grid-row: span 2;
+    }
+
+    .gallery img {
+      width: 100%;
+      height: 100%;
+      min-height: 260px;
+      object-fit: cover;
+    }
+
+    .boundary {
+      display: grid;
+      grid-template-columns: 0.9fr 1.1fr;
+      gap: 18px;
+      align-items: stretch;
+    }
+
+    .do-not {
+      padding: 28px;
+      border: 1px solid #ffd4d4;
+      border-radius: 8px;
+      background: #fff7f7;
+    }
+
+    .do {
+      padding: 28px;
+      border: 1px solid #d7ebd6;
+      border-radius: 8px;
+      background: #f5fbf5;
+    }
+
+    .boundary ul {
+      margin: 16px 0 0;
+      padding-left: 20px;
+      color: #4f5660;
+      line-height: 1.9;
+    }
+
+    .final {
+      padding: 70px 0 86px;
+      background: linear-gradient(135deg, #111317, #242833);
+      color: #fff;
+    }
+
+    .final-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 0.78fr) minmax(360px, 0.72fr);
+      gap: 34px;
+      align-items: center;
+    }
+
+    .final h2 {
+      color: #fff;
+    }
+
+    .final p {
+      color: #d8dde6;
+    }
+
+    .final-card {
+      padding: 28px;
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.08);
+      backdrop-filter: blur(16px);
+    }
+
+    .final-card strong {
+      display: block;
+      margin-bottom: 12px;
+      color: #ffffff;
+      font-size: 18px;
+    }
+
+    .final-card p {
+      margin: 0;
+      line-height: 1.8;
+    }
+
+    footer {
+      padding: 28px 0;
+      color: #7b828c;
+      background: #0f1115;
+      font-size: 13px;
+    }
+
+    @media (max-width: 960px) {
+      .hero-grid,
+      .split,
+      .final-grid,
+      .boundary,
+      .position-showcase {
+        grid-template-columns: 1fr;
+      }
+
+      .hero {
+        padding-top: 44px;
+      }
+
+      .hero-grid {
+        gap: 28px;
+      }
+
+      .three-layer,
+      .path {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .comparison {
+        grid-template-columns: 1fr;
+      }
+
+      .gallery {
+        grid-template-columns: 1fr 1fr;
+      }
+    }
+
+    @media (max-width: 680px) {
+      .shell {
+        width: min(100% - 24px, 1180px);
+      }
+
+      .topbar-inner {
+        align-items: flex-start;
+        flex-direction: column;
+        padding: 12px 0;
+      }
+
+      .nav {
+        width: 100%;
+        overflow-x: auto;
+        padding-bottom: 2px;
+      }
+
+      .hero {
+        min-height: auto;
+      }
+
+      .hero-copy {
+        font-size: 16px;
+      }
+
+      section {
+        padding: 54px 0;
+      }
+
+      .three-layer,
+      .feature-grid,
+      .scenarios,
+      .path,
+      .gallery,
+      .comparison {
+        grid-template-columns: 1fr;
+      }
+
+      .gallery figure:first-child {
+        grid-row: auto;
+      }
+
+      .quote-band {
+        padding: 26px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="shell topbar-inner">
+      <a class="brand" href="#top" aria-label="返回顶部">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span>WATCHER</span>
+      </a>
+      <nav class="nav" aria-label="页面导航">
+        <a href="#strategy">战略问题</a>
+        <a href="#hypothesis">产品假设</a>
+        <a href="#position">项目定位</a>
+        <a href="#mvp">MVP 验证</a>
+        <a href="#path">软硬件路径</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <div class="shell hero-grid">
+        <div>
+          <span class="kicker"><span class="pulse"></span> 下一代 AI 硬件生态位探索</span>
+          <h1>当软件不再稀缺，AI 需要新的眼睛</h1>
+          <p class="hero-copy">
+            Watcher 探索的是 AI 如何通过双视角现实感知，从屏幕内的软件助手，走向现实世界中持续在场、理解场景并主动服务用户的系统。
+          </p>
+          <div class="hero-actions">
+            <a class="btn primary" href="#strategy">阅读三层定位</a>
+            <a class="btn" href="#mvp">查看验证场景</a>
+          </div>
+        </div>
+        <div class="hero-visual" aria-label="Watcher 硬件概念主视觉">
+          <img src="./ChatGPT Image 2026年5月12日 11_21_20.png" alt="Watcher 硬件尺寸和正反侧面概念图" />
+          <div class="spec-strip" aria-label="定位关键词">
+            <span class="spec-pill">现实世界入口</span>
+            <span class="spec-pill">双视角感知</span>
+            <span class="spec-pill">长期在场</span>
+            <span class="spec-pill">主动服务</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="strategy">
+      <div class="shell">
+        <div class="section-head">
+          <div class="eyebrow">Layer 01 / Strategic Question</div>
+          <h2>软件越来越容易被生成，AI 需要新的现实世界入口</h2>
+          <p class="lead">
+            单纯做手机 App，很容易陷入既有生态位：入口被手机系统和大厂占据，交互被屏幕和点击路径限制，场景依赖用户主动打开和操作。
+          </p>
+        </div>
+
+        <div class="three-layer">
+          <article class="layer">
+            <div class="layer-number">1</div>
+            <h3>软件能力被压缩</h3>
+            <p>AI coding agent 让常规功能、垂类工具和轻量 App 更容易被生成、复制和重组。</p>
+          </article>
+          <article class="layer">
+            <div class="layer-number">2</div>
+            <h3>用户路径被压缩</h3>
+            <p>用户不再必须打开 App 找功能，而是通过一句话、习惯或上下文触发，让 AI 直接完成任务。</p>
+          </article>
+          <article class="layer">
+            <div class="layer-number">3</div>
+            <h3>手机生态位拥挤</h3>
+            <p>手机入口被系统和大厂占据，单点 App 很容易被通用 Agent 或平台能力吸收。</p>
+          </article>
+        </div>
+        <div class="big-question">
+          <p>所以真正的问题是：AI 如果要进入现实世界，它需要什么样的新硬件生态位？</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="shell">
+        <div class="quote-band">
+          <p>Watcher 要回答的不是“如何再做一个 AI App”，而是 AI 如何通过现实世界入口、长期感知和软硬件结合，形成区别于手机 App 的新生态位。</p>
+          <span>这是产品定位的战略起点：从功能竞争，转向场景入口、长期上下文和服务闭环的竞争。</span>
+        </div>
+      </div>
+    </section>
+
+    <section id="hypothesis">
+      <div class="shell">
+        <div class="section-head">
+          <div class="eyebrow">Layer 02 / Product Hypothesis</div>
+          <h2>手机有摄像头，但手机不是 AI 的眼睛</h2>
+          <p class="lead">
+            手机摄像头是临时、手持、由用户主动调用的影像入口；AI 的眼睛应该长期在场、稳定观察、理解空间变化，并结合声音、画面和历史上下文形成判断与反馈。
+          </p>
+        </div>
+        <div class="comparison">
+          <article class="compare-card">
+            <span class="tag">Phone Camera</span>
+            <h3>手机摄像头</h3>
+            <ul>
+              <li>临时使用</li>
+              <li>手持拍摄</li>
+              <li>用户主动打开</li>
+              <li>占用手机和注意力</li>
+              <li>以拍摄和记录为主</li>
+            </ul>
+          </article>
+          <article class="compare-card ai-eye">
+            <span class="tag green">AI Eye</span>
+            <h3>AI 的眼睛</h3>
+            <ul>
+              <li>长时间在场</li>
+              <li>稳定感知环境</li>
+              <li>理解空间变化</li>
+              <li>结合声音、画面、历史上下文</li>
+              <li>主动形成记录、判断和反馈</li>
+            </ul>
+          </article>
+        </div>
+        <div class="big-question">
+          <p>双摄 + AI 不是为了多一个摄像头，而是为了让 AI 获得更接近现实感知的输入结构。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="position">
+      <div class="shell">
+        <div class="section-head">
+          <div class="eyebrow">Layer 03 / Project Position</div>
+          <h2>Watcher 是探索“AI 之眼”硬件生态位的原型系统</h2>
+          <p class="lead">
+            通过双摄 / 多模态感知、长时视频理解、实时互动、专家式分析和长期记忆，验证 AI 如何从屏幕内的软件助手，变成现实世界中持续在场的理解者与服务者。
+          </p>
+        </div>
+        <div class="position-showcase">
+          <div class="position-copy">
+            <span class="tag green">Project Answer</span>
+            <p>
+              Watcher 讲的不是一个设备品类，而是 AI 进入现实世界的方式：通过稳定、多视角、多模态的感知结构，让 AI 理解人的状态、行为和场景上下文。
+            </p>
+            <p>
+              感知不是终点。Watcher 要验证的是，AI 能否把“看见”进一步转化为提醒、分析、建议、复盘和辅助决策。
+            </p>
+          </div>
+          <img src="./ChatGPT Image 2026年5月9日 14_09_17.png" alt="Watcher 感知用户状态并形成服务反馈" />
+        </div>
+      </div>
+    </section>
+
+    <section id="mvp">
+      <div class="shell">
+        <div class="section-head">
+          <div class="eyebrow">MVP Validation</div>
+          <h2>MVP 验证的不是孤立功能，而是多视角感知是否成立</h2>
+          <p class="lead">
+            AI 健身和双视角视频分析是同一个假设的两个验证场景：多视角现实感知，能否让 AI 更准确理解人，并提供更个性化的服务。
+          </p>
+        </div>
+        <div class="scenarios">
+          <article class="scenario">
+            <img src="./ChatGPT Image 2026年5月12日 11_22_07.png" alt="Watcher 与手机磁吸组合的硬件概念图" />
+            <div class="scenario-body">
+              <span class="tag">AI Fitness</span>
+              <h3>身体状态与动作质量理解</h3>
+              <p>正面视角看动作幅度、左右平衡和姿态展开；侧面视角看脊柱角度、膝盖轨迹和重心变化。</p>
+            </div>
+          </article>
+          <article class="scenario">
+            <img src="./196964c1-42e4-4f93-b311-6bc8967c5236.png" alt="Watcher 分析完成概念图" />
+            <div class="scenario-body">
+              <span class="tag green">Dual-View Analysis</span>
+              <h3>空间行为与事件上下文理解</h3>
+              <p>一个视角看用户行为，另一个视角看环境、物品、空间变化或事件结果，最终服务于复盘、总结和建议。</p>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="path">
+      <div class="shell">
+        <div class="section-head">
+          <div class="eyebrow">Software + Hardware Path</div>
+          <h2>软件降低理解成本，硬件承接长期价值</h2>
+          <p class="lead">
+            Watcher 不先做一个封闭硬件，也不止步于纯软件 App。软件用于降低体验门槛、教育用户、验证场景；硬件用于提供稳定视角、多视角数据、长期在场和更强的场景绑定。
+          </p>
+        </div>
+        <div class="path">
+          <article class="path-step">
+            <strong>01</strong>
+            <h3>低门槛软件入口</h3>
+            <p>让用户先体验 AI 视觉感知能做什么，降低理解成本和尝试成本。</p>
+          </article>
+          <article class="path-step">
+            <strong>02</strong>
+            <h3>单摄验证基础场景</h3>
+            <p>用轻量体验验证用户兴趣、基础场景和 AI 感知的可用性。</p>
+          </article>
+          <article class="path-step">
+            <strong>03</strong>
+            <h3>显露单摄边界</h3>
+            <p>当用户需要更多角度、更少盲区和更稳定现场感知时，硬件升级变得自然。</p>
+          </article>
+          <article class="path-step">
+            <strong>04</strong>
+            <h3>双摄硬件承接</h3>
+            <p>用多视角、长期在场和软硬件协同，承接更复杂的个性化需求。</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="shell">
+        <div class="section-head">
+          <div class="eyebrow">Concept Gallery</div>
+          <h2>概念验证物料</h2>
+          <p class="lead">以下图片作为外观、交互和使用方式的辅助展示；页面核心叙事仍以“AI 的眼睛”和“主动服务”为准。</p>
+        </div>
+        <div class="gallery" aria-label="Watcher 硬件概念图库">
+          <figure>
+            <img src="./ChatGPT Image 2026年5月12日 11_21_20.png" alt="Watcher 硬件三视图与尺寸" />
+          </figure>
+          <figure>
+            <img src="./46a811ee-6c08-45d4-bd85-80125af7769b.png" alt="Watcher 宠物场景概念" />
+          </figure>
+          <figure>
+            <img src="./ChatGPT Image 2026年5月12日 11_22_07.png" alt="Watcher 与手机组合概念" />
+          </figure>
+          <figure>
+            <img src="./196964c1-42e4-4f93-b311-6bc8967c5236.png" alt="Watcher 分析场景概念" />
+          </figure>
+          <figure>
+            <img src="./ChatGPT Image 2026年5月9日 14_09_17.png" alt="Watcher 健康提醒场景概念" />
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="shell boundary">
+        <div class="do-not">
+          <div class="eyebrow">Avoid</div>
+          <h2>定位边界</h2>
+          <ul>
+            <li>监控 App</li>
+            <li>安防摄像头</li>
+            <li>摄像头管理工具</li>
+            <li>普通视频分析软件</li>
+            <li>手机 App 里的一个 AI 功能</li>
+            <li>简单的“摄像头 + 大模型”应用</li>
+          </ul>
+        </div>
+        <div class="do">
+          <div class="eyebrow">Use Instead</div>
+          <h2>推荐表达</h2>
+          <ul>
+            <li>以人为中心的双视角 AI 感知与服务系统</li>
+            <li>面向现实世界的 AI 眼睛</li>
+            <li>让 AI 理解人的状态、行为和场景上下文</li>
+            <li>通过软硬件结合形成长期在场和服务闭环</li>
+            <li>探索下一代 AI 硬件生态位</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="final">
+      <div class="shell final-grid">
+        <div>
+          <div class="eyebrow">Positioning Statement</div>
+          <h2>Watcher 是探索“AI 之眼”硬件生态位的原型系统</h2>
+          <p class="lead">
+            它讲的不是一个设备品类，而是 AI 进入现实世界的方式。
+          </p>
+        </div>
+        <div class="final-card">
+          <strong>答辩表达</strong>
+          <p>
+            通过双摄与多模态感知、长时视频理解、实时互动、专家式分析和长期记忆，Watcher 验证 AI 如何从屏幕内的软件助手，变成现实世界中持续在场、理解场景并主动服务用户的系统。
+          </p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="shell">Watcher product positioning report / static HTML generated from docs/product-positioning.md</div>
+  </footer>
+</body>
+</html>

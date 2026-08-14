@@ -9,6 +9,7 @@ import java.time.format.DateTimeFormatter
 import java.util.Base64
 import java.util.Properties
 import groovy.json.JsonOutput
+import com.google.protobuf.gradle.*
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -16,6 +17,7 @@ plugins {
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.ksp)
+    alias(libs.plugins.protobuf)
 }
 
 val localProperties = Properties().apply {
@@ -263,11 +265,27 @@ android {
     androidResources {
         noCompress += "litertlm"
         noCompress += "mp4"
+        noCompress += "gif"
     }
     packaging {
         resources {
             excludes += "META-INF/INDEX.LIST"
             excludes += "META-INF/DEPENDENCIES"
+        }
+    }
+}
+
+protobuf {
+    protoc {
+        artifact = "com.google.protobuf:protoc:${libs.versions.protobuf.get()}"
+    }
+    generateProtoTasks {
+        all().configureEach {
+            builtins {
+                id("java") {
+                    option("lite")
+                }
+            }
         }
     }
 }
@@ -424,6 +442,7 @@ dependencies {
 
     // Gson
     implementation(libs.gson)
+    implementation(libs.protobuf.javalite)
 
     // MJPEG frame sequence to MP4 encoding
     implementation(libs.jcodec.android)

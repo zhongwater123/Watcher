@@ -12,6 +12,12 @@ interface VideoAudioAssetDao {
     @Query("SELECT * FROM video_audio_assets WHERE runId = :runId ORDER BY assetType ASC, segmentIndex ASC, id ASC")
     fun observeForRun(runId: Long): Flow<List<VideoAudioAssetEntity>>
 
+    @Query("SELECT * FROM video_audio_assets WHERE runId = :runId ORDER BY assetType ASC, segmentIndex ASC, id ASC LIMIT :limit")
+    fun observeForRunLimited(runId: Long, limit: Int): Flow<List<VideoAudioAssetEntity>>
+
+    @Query("SELECT COUNT(*) FROM video_audio_assets WHERE runId = :runId")
+    fun observeCountForRun(runId: Long): Flow<Int>
+
     @Query("SELECT * FROM video_audio_assets WHERE runId = :runId ORDER BY assetType ASC, segmentIndex ASC, id ASC")
     suspend fun getForRun(runId: Long): List<VideoAudioAssetEntity>
 

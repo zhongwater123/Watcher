@@ -36,3 +36,15 @@ app (5).zip
 *.mp4
 watcher-video-*-debug-*.json
 watcher_wallet_config.json
+
+# Local caches, downloaded references, backups, and diagnostic captures
+/.npm-cache/
+/Watcher-main.zip
+/app/src*.zip
+/app/shengcho.zip
+/ast_java_client.zip
+/ast_java_client/
+/exercises-dataset-main.zip
+/exercises-dataset-main/
+/watcher-thread-dump.txt
+/docs/web-for-report/新建 Microsoft PowerPoint 演示文稿.pptx

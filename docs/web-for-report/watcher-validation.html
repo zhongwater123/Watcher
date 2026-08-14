@@ -1,0 +1,1169 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>How does a capability become a product? | Watcher</title>
+  <style>
+    :root {
+      --ink: #08090c;
+      --muted: #6f7480;
+      --line: rgba(8, 9, 12, 0.1);
+      --glass: rgba(255, 255, 255, 0.72);
+      --soft: #f5f7fb;
+      --blue: #2478ff;
+      --violet: #7457ff;
+      --cyan: #2ed3ff;
+      --green: #34c759;
+      --rose: #ff3b6b;
+      --shadow: 0 28px 80px rgba(22, 29, 45, 0.13);
+      --radius: 8px;
+      --ease: cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+      background: #fff;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 82% 6%, rgba(36, 120, 255, 0.12), transparent 28rem),
+        linear-gradient(180deg, #fff 0%, #f8f9fc 58%, #fff 100%);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif;
+      letter-spacing: 0;
+      overflow-x: hidden;
+    }
+
+    img {
+      display: block;
+      max-width: 100%;
+    }
+
+    button,
+    input,
+    textarea {
+      font: inherit;
+    }
+
+    .topbar {
+      position: fixed;
+      inset: 0 0 auto;
+      z-index: 20;
+      height: 64px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 clamp(20px, 4vw, 56px);
+      background: rgba(255, 255, 255, 0.68);
+      border-bottom: 1px solid rgba(8, 9, 12, 0.07);
+      backdrop-filter: blur(24px) saturate(160%);
+    }
+
+    .mark {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    .mark-dot {
+      width: 18px;
+      height: 18px;
+      border: 5px solid var(--ink);
+      border-radius: 999px;
+      box-shadow: 0 0 0 1px rgba(8, 9, 12, 0.08);
+    }
+
+    .nav-note {
+      color: var(--muted);
+      font-size: 13px;
+      letter-spacing: 0;
+    }
+
+    .section {
+      position: relative;
+      min-height: 100svh;
+      padding: clamp(86px, 10vh, 128px) clamp(20px, 5vw, 72px);
+      display: grid;
+      place-items: center;
+      overflow: clip;
+    }
+
+    .shell {
+      width: min(1180px, 100%);
+      margin: 0 auto;
+    }
+
+    .narrow {
+      width: min(900px, 100%);
+      margin: 0 auto;
+    }
+
+    .eyebrow {
+      margin: 0 0 18px;
+      color: var(--blue);
+      font-size: clamp(13px, 1.2vw, 16px);
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+    }
+
+    h1,
+    h2,
+    h3,
+    p {
+      margin: 0;
+    }
+
+    .hero-title {
+      position: relative;
+      z-index: 2;
+      font-size: clamp(64px, 13vw, 190px);
+      line-height: 0.86;
+      font-weight: 800;
+      text-align: center;
+      letter-spacing: 0;
+    }
+
+    .hero-subtitle {
+      position: relative;
+      z-index: 2;
+      margin: 28px auto 0;
+      max-width: 820px;
+      color: #1b1d22;
+      font-size: clamp(28px, 5vw, 72px);
+      line-height: 1.02;
+      font-weight: 760;
+      text-align: center;
+      letter-spacing: 0;
+    }
+
+    .hero-line {
+      position: relative;
+      z-index: 2;
+      max-width: 540px;
+      margin: 28px auto 0;
+      color: var(--muted);
+      font-size: clamp(20px, 2.2vw, 30px);
+      line-height: 1.3;
+      text-align: center;
+    }
+
+    .hero-device-wrap {
+      position: relative;
+      z-index: 1;
+      width: min(720px, 94vw);
+      margin: clamp(32px, 7vh, 78px) auto 0;
+      filter: drop-shadow(0 42px 70px rgba(20, 26, 38, 0.18));
+      animation: float 5.8s ease-in-out infinite;
+      transform: translateY(calc(var(--scroll, 0) * -30px)) scale(calc(1 + var(--scroll, 0) * 0.05));
+    }
+
+    .hero-device {
+      width: 100%;
+      border-radius: 22px;
+      mix-blend-mode: multiply;
+    }
+
+    @keyframes float {
+      0%, 100% { translate: 0 0; }
+      50% { translate: 0 -18px; }
+    }
+
+    .scroll-cue {
+      position: absolute;
+      left: 50%;
+      bottom: 28px;
+      width: 28px;
+      height: 44px;
+      border: 1px solid rgba(8, 9, 12, 0.18);
+      border-radius: 999px;
+      transform: translateX(-50%);
+    }
+
+    .scroll-cue::after {
+      content: "";
+      position: absolute;
+      left: 50%;
+      top: 9px;
+      width: 4px;
+      height: 8px;
+      border-radius: 999px;
+      background: var(--ink);
+      transform: translateX(-50%);
+      animation: cue 1.7s ease-in-out infinite;
+    }
+
+    @keyframes cue {
+      0% { opacity: 0; translate: 0 -4px; }
+      35% { opacity: 1; }
+      100% { opacity: 0; translate: 0 12px; }
+    }
+
+    .big-lines {
+      display: grid;
+      gap: clamp(10px, 1.6vh, 22px);
+      text-align: center;
+    }
+
+    .big-lines span {
+      display: block;
+      font-size: clamp(40px, 8vw, 118px);
+      line-height: 0.98;
+      font-weight: 780;
+      letter-spacing: 0;
+    }
+
+    .watch-word {
+      margin-top: clamp(24px, 7vh, 86px);
+      font-size: clamp(78px, 18vw, 250px);
+      line-height: 0.78;
+      font-weight: 850;
+      letter-spacing: 0;
+      background: linear-gradient(110deg, var(--ink), var(--blue) 54%, var(--violet));
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+
+    .split {
+      display: grid;
+      grid-template-columns: minmax(0, 0.95fr) minmax(320px, 1.05fr);
+      gap: clamp(32px, 6vw, 86px);
+      align-items: center;
+    }
+
+    .display {
+      font-size: clamp(40px, 7.2vw, 104px);
+      line-height: 0.98;
+      font-weight: 800;
+      letter-spacing: 0;
+    }
+
+    .display .muted {
+      color: #a9adb6;
+    }
+
+    .lede {
+      margin-top: 24px;
+      color: var(--muted);
+      font-size: clamp(19px, 2vw, 28px);
+      line-height: 1.36;
+    }
+
+    .phone-card {
+      min-height: 560px;
+      border: 1px solid rgba(8, 9, 12, 0.1);
+      border-radius: var(--radius);
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.86), rgba(245, 247, 251, 0.74));
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(22px);
+      padding: clamp(18px, 3vw, 34px);
+      display: grid;
+      grid-template-rows: auto 1fr;
+      gap: 20px;
+    }
+
+    .chat {
+      display: grid;
+      gap: 12px;
+    }
+
+    .bubble {
+      width: fit-content;
+      max-width: 82%;
+      padding: 13px 16px;
+      border-radius: 18px;
+      background: #eef1f6;
+      color: #20242c;
+      font-size: 16px;
+    }
+
+    .bubble.user {
+      justify-self: end;
+      background: var(--blue);
+      color: #fff;
+    }
+
+    .scene-frame {
+      position: relative;
+      min-height: 310px;
+      overflow: hidden;
+      border-radius: var(--radius);
+      background: #0b0d12;
+    }
+
+    .scene {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 28px;
+      color: #fff;
+      opacity: 0;
+      transform: scale(1.04);
+      transition: opacity 900ms var(--ease), transform 1200ms var(--ease);
+    }
+
+    .scene.is-active {
+      opacity: 1;
+      transform: scale(1);
+    }
+
+    .scene strong {
+      font-size: clamp(42px, 6vw, 82px);
+      line-height: 0.95;
+      text-align: center;
+    }
+
+    .scene small {
+      position: absolute;
+      left: 24px;
+      bottom: 22px;
+      color: rgba(255, 255, 255, 0.68);
+      font-size: 14px;
+    }
+
+    .scene.classroom {
+      background: linear-gradient(135deg, #111827, #3166ff);
+    }
+
+    .scene.sport {
+      background: linear-gradient(135deg, #091713, #1fd080);
+    }
+
+    .scene.office {
+      background: linear-gradient(135deg, #111, #727986);
+    }
+
+    .scene.photo {
+      background: linear-gradient(135deg, #1a120f, #ff9b42);
+    }
+
+    .card-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 18px;
+      margin-top: clamp(40px, 8vh, 76px);
+    }
+
+    .glass-card {
+      position: relative;
+      min-height: 260px;
+      padding: 24px;
+      border: 1px solid rgba(8, 9, 12, 0.08);
+      border-radius: var(--radius);
+      background: var(--glass);
+      box-shadow: 0 18px 60px rgba(20, 28, 44, 0.08);
+      backdrop-filter: blur(24px) saturate(150%);
+      overflow: hidden;
+      transition: transform 700ms var(--ease), box-shadow 700ms var(--ease), border-color 700ms var(--ease);
+    }
+
+    .glass-card::before {
+      content: "";
+      position: absolute;
+      inset: auto -20% -35% -20%;
+      height: 55%;
+      background: radial-gradient(circle, rgba(36, 120, 255, 0.16), transparent 62%);
+      opacity: 0;
+      transition: opacity 700ms var(--ease);
+    }
+
+    .glass-card.is-active,
+    .glass-card:hover {
+      transform: translateY(-8px);
+      border-color: rgba(36, 120, 255, 0.26);
+      box-shadow: var(--shadow);
+    }
+
+    .glass-card.is-active::before,
+    .glass-card:hover::before {
+      opacity: 1;
+    }
+
+    .icon {
+      font-size: 38px;
+      line-height: 1;
+    }
+
+    .glass-card h3 {
+      margin-top: 60px;
+      font-size: clamp(22px, 2vw, 32px);
+      line-height: 1;
+      letter-spacing: 0;
+    }
+
+    .glass-card p {
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.45;
+    }
+
+    .empty-card {
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(247, 248, 252, 0.38));
+    }
+
+    .empty-card .question {
+      color: rgba(8, 9, 12, 0.24);
+      font-size: 74px;
+      font-weight: 750;
+    }
+
+    .reveal-product {
+      margin-top: clamp(42px, 8vh, 80px);
+      display: grid;
+      grid-template-columns: minmax(240px, 0.72fr) minmax(0, 1fr);
+      gap: clamp(28px, 5vw, 72px);
+      align-items: center;
+    }
+
+    .product-image {
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+      transform: translateY(calc(var(--scroll, 0) * -18px));
+    }
+
+    .traits {
+      display: grid;
+      gap: 18px;
+    }
+
+    .trait {
+      padding: 22px 24px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, 0.72);
+      font-size: clamp(24px, 3vw, 42px);
+      font-weight: 760;
+      box-shadow: 0 12px 42px rgba(20, 28, 44, 0.06);
+    }
+
+    .network {
+      min-height: 610px;
+      display: grid;
+      grid-template-columns: 1fr minmax(220px, 0.7fr) 1fr;
+      gap: clamp(18px, 4vw, 56px);
+      align-items: center;
+    }
+
+    .node {
+      position: relative;
+      min-height: 310px;
+      padding: 28px;
+      border: 1px solid rgba(8, 9, 12, 0.09);
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, 0.68);
+      box-shadow: 0 20px 60px rgba(20, 28, 44, 0.08);
+      backdrop-filter: blur(20px);
+      display: grid;
+      align-content: space-between;
+    }
+
+    .node h3 {
+      font-size: clamp(34px, 4vw, 62px);
+      line-height: 0.96;
+    }
+
+    .node p {
+      color: var(--muted);
+      font-size: 20px;
+    }
+
+    .node img {
+      max-height: 240px;
+      width: 100%;
+      object-fit: contain;
+      mix-blend-mode: multiply;
+    }
+
+    .ai-node {
+      aspect-ratio: 1;
+      border-radius: 999px;
+      display: grid;
+      place-items: center;
+      color: #fff;
+      background:
+        radial-gradient(circle at 34% 24%, rgba(255, 255, 255, 0.7), transparent 7%),
+        linear-gradient(135deg, #111, #2375ff 58%, #8257ff);
+      box-shadow: 0 28px 90px rgba(36, 120, 255, 0.25);
+      font-size: clamp(46px, 6vw, 88px);
+      font-weight: 800;
+    }
+
+    .connector {
+      position: absolute;
+      top: 50%;
+      height: 1px;
+      width: min(18vw, 230px);
+      background: linear-gradient(90deg, transparent, var(--blue), transparent);
+      transform-origin: left center;
+      animation: pulse 2.6s ease-in-out infinite;
+    }
+
+    .connector.left {
+      right: calc(50% + 96px);
+    }
+
+    .connector.right {
+      left: calc(50% + 96px);
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 0.32; scale: 0.74 1; }
+      50% { opacity: 1; scale: 1 1; }
+    }
+
+    .quote-screen {
+      text-align: center;
+    }
+
+    .quote-screen .display {
+      font-size: clamp(54px, 10vw, 150px);
+    }
+
+    .scenario-stack {
+      width: min(980px, 100%);
+      margin: 54px auto 0;
+      display: grid;
+      gap: 12px;
+    }
+
+    .scenario {
+      min-height: 82px;
+      display: grid;
+      grid-template-columns: 120px 1fr;
+      gap: 24px;
+      align-items: center;
+      padding: 18px 22px;
+      border: 1px solid rgba(8, 9, 12, 0.08);
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, 0.72);
+      box-shadow: 0 14px 42px rgba(20, 28, 44, 0.05);
+      transform: scale(calc(1 - var(--stack, 0) * 0.012));
+    }
+
+    .scenario b {
+      font-size: 22px;
+    }
+
+    .scenario span {
+      color: var(--muted);
+      font-size: 17px;
+    }
+
+    .too-many {
+      margin-top: clamp(46px, 9vh, 96px);
+      text-align: center;
+      font-size: clamp(52px, 10vw, 138px);
+      line-height: 0.92;
+      font-weight: 820;
+    }
+
+    .criteria {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 16px;
+      margin-top: 56px;
+    }
+
+    .criteria-card {
+      min-height: 220px;
+      padding: 22px;
+      border: 1px solid rgba(8, 9, 12, 0.08);
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, 0.68);
+      backdrop-filter: blur(20px);
+      box-shadow: 0 16px 48px rgba(20, 28, 44, 0.06);
+      opacity: 0.42;
+      transform: translateY(16px);
+      transition: opacity 700ms var(--ease), transform 700ms var(--ease), background 700ms var(--ease);
+    }
+
+    .criteria-card.is-active {
+      opacity: 1;
+      transform: translateY(0);
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(239, 246, 255, 0.68));
+    }
+
+    .check {
+      display: inline-grid;
+      width: 34px;
+      height: 34px;
+      place-items: center;
+      color: #fff;
+      border-radius: 999px;
+      background: var(--green);
+      font-weight: 800;
+    }
+
+    .criteria-card h3 {
+      margin-top: 54px;
+      font-size: clamp(22px, 2vw, 30px);
+      line-height: 1.06;
+    }
+
+    .candidate-grid {
+      display: grid;
+      grid-template-columns: repeat(7, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 56px;
+      align-items: stretch;
+    }
+
+    .candidate {
+      min-height: 230px;
+      padding: 22px;
+      border: 1px solid rgba(8, 9, 12, 0.08);
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, 0.72);
+      display: grid;
+      align-content: end;
+      box-shadow: 0 16px 48px rgba(20, 28, 44, 0.06);
+      transition: transform 900ms var(--ease), box-shadow 900ms var(--ease), background 900ms var(--ease);
+    }
+
+    .candidate strong {
+      font-size: clamp(20px, 2vw, 30px);
+      line-height: 1;
+    }
+
+    .candidate small {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .candidate.featured {
+      transform: translateY(-16px) scale(1.08);
+      background: linear-gradient(145deg, #fff, rgba(232, 241, 255, 0.9));
+      box-shadow: var(--shadow);
+      border-color: rgba(36, 120, 255, 0.24);
+    }
+
+    .photo-section {
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0.98)),
+        url("./watcher-phone-mount.png") center 44% / min(920px, 82vw) no-repeat,
+        #fff;
+    }
+
+    .photo-copy {
+      min-height: 74svh;
+      display: grid;
+      align-content: end;
+    }
+
+    .photo-copy .display {
+      width: min(760px, 100%);
+      text-wrap: balance;
+    }
+
+    .workflow {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 18px;
+      margin-top: 64px;
+    }
+
+    .step {
+      position: relative;
+      min-height: 260px;
+      padding: 24px;
+      border: 1px solid rgba(8, 9, 12, 0.08);
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, 0.72);
+      box-shadow: 0 18px 60px rgba(20, 28, 44, 0.07);
+      display: grid;
+      align-content: space-between;
+    }
+
+    .step::after {
+      content: "";
+      position: absolute;
+      top: 50%;
+      right: -18px;
+      width: 18px;
+      height: 1px;
+      background: rgba(8, 9, 12, 0.24);
+    }
+
+    .step:last-child::after {
+      display: none;
+    }
+
+    .step-number {
+      color: var(--blue);
+      font-size: 14px;
+      font-weight: 800;
+    }
+
+    .step h3 {
+      font-size: clamp(26px, 3vw, 44px);
+      line-height: 1;
+    }
+
+    .step p {
+      color: var(--muted);
+      line-height: 1.45;
+    }
+
+    .dark {
+      color: #fff;
+      background:
+        radial-gradient(circle at 80% 10%, rgba(36, 120, 255, 0.25), transparent 28rem),
+        radial-gradient(circle at 18% 82%, rgba(255, 59, 107, 0.18), transparent 24rem),
+        #050509;
+    }
+
+    .dark .eyebrow,
+    .dark .lede,
+    .dark .display .muted {
+      color: rgba(255, 255, 255, 0.58);
+    }
+
+    .unknown-title {
+      font-size: clamp(62px, 14vw, 190px);
+      line-height: 0.82;
+      font-weight: 860;
+      letter-spacing: 0;
+    }
+
+    .unknown-grid {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 56px;
+    }
+
+    .unknown {
+      min-height: 210px;
+      padding: 22px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, 0.08);
+      backdrop-filter: blur(22px);
+      display: grid;
+      align-content: end;
+      color: rgba(255, 255, 255, 0.9);
+      transform: translateY(18px);
+      opacity: 0.35;
+      transition: opacity 800ms var(--ease), transform 800ms var(--ease);
+    }
+
+    .unknown.is-active {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .unknown strong {
+      font-size: clamp(20px, 2vw, 28px);
+      line-height: 1.05;
+    }
+
+    .final {
+      text-align: center;
+    }
+
+    .final .display {
+      font-size: clamp(62px, 13vw, 182px);
+      line-height: 0.84;
+    }
+
+    .find-out {
+      margin-top: clamp(58px, 10vh, 110px);
+      font-size: clamp(34px, 6vw, 92px);
+      font-weight: 790;
+      background: linear-gradient(115deg, var(--ink), var(--blue), var(--violet));
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+
+    .fade {
+      opacity: 0;
+      transform: translateY(34px);
+      filter: blur(10px);
+      transition:
+        opacity 900ms var(--ease),
+        transform 1000ms var(--ease),
+        filter 1000ms var(--ease);
+    }
+
+    .fade.is-visible {
+      opacity: 1;
+      transform: translateY(0);
+      filter: blur(0);
+    }
+
+    .delay-1 { transition-delay: 120ms; }
+    .delay-2 { transition-delay: 240ms; }
+    .delay-3 { transition-delay: 360ms; }
+    .delay-4 { transition-delay: 480ms; }
+    .delay-5 { transition-delay: 600ms; }
+
+    @media (max-width: 980px) {
+      .split,
+      .reveal-product,
+      .network {
+        grid-template-columns: 1fr;
+      }
+
+      .card-grid,
+      .criteria,
+      .workflow,
+      .unknown-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .candidate-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .candidate.featured {
+        transform: none;
+        grid-column: span 2;
+      }
+
+      .connector {
+        display: none;
+      }
+    }
+
+    @media (max-width: 640px) {
+      .topbar {
+        height: 56px;
+      }
+
+      .nav-note {
+        display: none;
+      }
+
+      .section {
+        padding: 82px 18px;
+      }
+
+      .hero-title {
+        font-size: clamp(62px, 23vw, 104px);
+      }
+
+      .hero-subtitle {
+        font-size: clamp(34px, 12vw, 60px);
+      }
+
+      .card-grid,
+      .criteria,
+      .workflow,
+      .unknown-grid,
+      .candidate-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .candidate.featured {
+        grid-column: auto;
+      }
+
+      .scenario {
+        grid-template-columns: 1fr;
+        gap: 6px;
+      }
+
+      .step::after {
+        top: auto;
+        right: auto;
+        left: 24px;
+        bottom: -18px;
+        width: 1px;
+        height: 18px;
+      }
+
+      .phone-card {
+        min-height: 470px;
+      }
+
+      .scene-frame {
+        min-height: 260px;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        scroll-behavior: auto !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar" aria-label="Page header">
+    <div class="mark"><span class="mark-dot" aria-hidden="true"></span><span>Watcher</span></div>
+    <div class="nav-note">From Vision to Validation</div>
+  </header>
+
+  <main>
+    <section class="section hero" data-parallax>
+      <div class="shell">
+        <h1 class="hero-title fade">Watcher</h1>
+        <p class="hero-subtitle fade delay-1">The Second Vision Node<br />for AI</p>
+        <p class="hero-line fade delay-2">AI cannot truly understand you, if it cannot see you.</p>
+        <div class="hero-device-wrap fade delay-3">
+          <img class="hero-device" src="./196964c1-42e4-4f93-b311-6bc8967c5236.png" alt="Watcher product render floating on a white background" />
+        </div>
+      </div>
+      <div class="scroll-cue" aria-hidden="true"></div>
+    </section>
+
+    <section class="section">
+      <div class="narrow big-lines">
+        <span class="fade">AI can hear.</span>
+        <span class="fade delay-1">AI can read.</span>
+        <span class="fade delay-2">AI can think.</span>
+        <span class="fade delay-3">But AI still cannot watch.</span>
+        <strong class="watch-word fade delay-4">WATCH.</strong>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="shell split">
+        <div>
+          <p class="eyebrow fade">AI today</p>
+          <h2 class="display fade delay-1">Today's AI knows<br />what you ask.<br /><br /><span class="muted">It doesn't know<br />what actually happened.</span></h2>
+        </div>
+        <div class="phone-card fade delay-2" data-scene-card>
+          <div class="chat">
+            <div class="bubble user">What did I miss today?</div>
+            <div class="bubble">I only know what you tell me.</div>
+            <div class="bubble user">But you were not there.</div>
+          </div>
+          <div class="scene-frame">
+            <div class="scene classroom is-active"><strong>Classroom</strong><small>context disappears after the lesson</small></div>
+            <div class="scene sport"><strong>Sport</strong><small>form, fatigue, progress</small></div>
+            <div class="scene office"><strong>Office</strong><small>meetings, whiteboards, decisions</small></div>
+            <div class="scene photo"><strong>Photography</strong><small>gear, space, risk</small></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="shell">
+        <p class="eyebrow fade">The Missing Input</p>
+        <h2 class="display fade delay-1">AI has many senses.<br /><span class="muted">One is still missing.</span></h2>
+        <div class="card-grid">
+          <article class="glass-card fade delay-1"><div class="icon" aria-hidden="true">Ear</div><h3>Audio</h3><p>Speech, tone, sound, meetings, and ambient signals.</p></article>
+          <article class="glass-card fade delay-2"><div class="icon" aria-hidden="true">Eye</div><h3>First-person Vision</h3><p>What your camera sees when you intentionally point it.</p></article>
+          <article class="glass-card fade delay-3"><div class="icon" aria-hidden="true">Heart</div><h3>Health Data</h3><p>Body signals from wearables, sensors, and daily rhythms.</p></article>
+          <article class="glass-card empty-card fade delay-4"><div class="question">?</div><h3>Third-person Vision</h3><p>The outside view that watches events as they unfold.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" data-parallax>
+      <div class="shell">
+        <p class="eyebrow fade">Second Vision</p>
+        <h2 class="display fade delay-1">Watcher<br /><span class="muted">The Missing Vision</span></h2>
+        <div class="reveal-product">
+          <img class="product-image fade delay-2" src="./watcher-dimensions.png" alt="Watcher front side back product render with dimensions" />
+          <div class="traits">
+            <div class="trait fade delay-1">Independent</div>
+            <div class="trait fade delay-2">Portable</div>
+            <div class="trait fade delay-3">Always Watching</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="shell">
+        <p class="eyebrow fade">Device Relationship</p>
+        <h2 class="display fade delay-1">Phone interacts.<br /><span class="muted">Watcher perceives.</span></h2>
+        <div class="network fade delay-2">
+          <article class="node">
+            <h3>Phone</h3>
+            <p>Interaction</p>
+            <img src="./watcher-phone-mount.png" alt="Phone connected with Watcher device" />
+          </article>
+          <div class="ai-node">AI</div>
+          <article class="node">
+            <h3>Watcher</h3>
+            <p>Perception</p>
+            <img src="./196964c1-42e4-4f93-b311-6bc8967c5236.png" alt="Watcher perception product render" />
+          </article>
+        </div>
+        <span class="connector left" aria-hidden="true"></span>
+        <span class="connector right" aria-hidden="true"></span>
+      </div>
+    </section>
+
+    <section class="section quote-screen">
+      <div class="narrow">
+        <h2 class="display fade">A capability<br />is not<br />a product.</h2>
+        <p class="lede fade delay-2">People don't buy capability.<br />They buy outcomes.</p>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="shell">
+        <p class="eyebrow fade">Need a Validation Wedge</p>
+        <h2 class="display fade delay-1">Watcher can do many things.</h2>
+        <div class="scenario-stack" data-stack>
+          <div class="scenario fade delay-1"><b>Classroom</b><span>Remember what happened when attention drifted.</span></div>
+          <div class="scenario fade delay-2"><b>Sport</b><span>Observe form without asking someone to film you.</span></div>
+          <div class="scenario fade delay-3"><b>Office</b><span>Capture whiteboards, context, and decisions.</span></div>
+          <div class="scenario fade delay-4"><b>Older Adults</b><span>Notice risk while preserving independence.</span></div>
+          <div class="scenario fade delay-5"><b>Pets</b><span>Watch behavior when people are away.</span></div>
+          <div class="scenario fade delay-3"><b>Photography</b><span>Guard equipment while the photographer is looking elsewhere.</span></div>
+          <div class="scenario fade delay-4"><b>Camp</b><span>Understand open, shared, unattended spaces.</span></div>
+        </div>
+        <div class="too-many fade delay-5">Too many.<br />Need one.</div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="shell">
+        <p class="eyebrow fade">How to choose?</p>
+        <h2 class="display fade delay-1">The first product needs<br /><span class="muted">validation gravity.</span></h2>
+        <div class="criteria">
+          <article class="criteria-card fade delay-1"><span class="check">✓</span><h3>Clear User</h3></article>
+          <article class="criteria-card fade delay-2"><span class="check">✓</span><h3>Clear Task</h3></article>
+          <article class="criteria-card fade delay-3"><span class="check">✓</span><h3>Low Validation Cost</h3></article>
+          <article class="criteria-card fade delay-4"><span class="check">✓</span><h3>Hardware Advantage</h3></article>
+          <article class="criteria-card fade delay-5"><span class="check">✓</span><h3>Weak Alternatives</h3></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="shell">
+        <p class="eyebrow fade">Candidates</p>
+        <h2 class="display fade delay-1">Not a table.<br /><span class="muted">A set of bets.</span></h2>
+        <div class="candidate-grid">
+          <article class="candidate fade delay-1"><strong>Pet</strong><small>Warm, but crowded.</small></article>
+          <article class="candidate fade delay-2"><strong>Office</strong><small>Valuable, but political.</small></article>
+          <article class="candidate fade delay-3"><strong>Sport</strong><small>Clear, but active hardware burden.</small></article>
+          <article class="candidate fade delay-4"><strong>Home</strong><small>Broad, but privacy heavy.</small></article>
+          <article class="candidate featured fade delay-5"><strong>Photography</strong><small>Best Candidate for Validation</small></article>
+          <article class="candidate fade delay-3"><strong>Booth</strong><small>Operational and narrow.</small></article>
+          <article class="candidate fade delay-4"><strong>Luggage</strong><small>Concrete, but intermittent.</small></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section photo-section">
+      <div class="shell photo-copy">
+        <p class="eyebrow fade">Photography Candidate</p>
+        <h2 class="display fade delay-1">You're looking<br />through the viewfinder.<br /><br /><span class="muted">Watcher looks after<br />your equipment.</span></h2>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="shell">
+        <p class="eyebrow fade">MVP Workflow</p>
+        <h2 class="display fade delay-1">A small loop<br /><span class="muted">with a visible outcome.</span></h2>
+        <div class="workflow">
+          <article class="step fade delay-1"><span class="step-number">01</span><h3>Place Watcher</h3><p>Set the device near the bag, tripod, lens case, or booth.</p></article>
+          <article class="step fade delay-2"><span class="step-number">02</span><h3>Select Object</h3><p>Frame the protected area once from the phone.</p></article>
+          <article class="step fade delay-3"><span class="step-number">03</span><h3>AI Watching</h3><p>Detect approach, removal, occlusion, and unusual motion.</p></article>
+          <article class="step fade delay-4"><span class="step-number">04</span><h3>Phone Alert</h3><p>Send a quick alert when attention should return.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section dark">
+      <div class="shell">
+        <p class="eyebrow fade">Reality Check</p>
+        <h2 class="unknown-title fade delay-1">UNKNOWNS</h2>
+        <div class="unknown-grid">
+          <article class="unknown fade delay-1"><strong>Pain Frequency</strong></article>
+          <article class="unknown fade delay-2"><strong>Deployment Cost</strong></article>
+          <article class="unknown fade delay-3"><strong>False Alarm</strong></article>
+          <article class="unknown fade delay-4"><strong>Hardware Acceptance</strong></article>
+          <article class="unknown fade delay-5"><strong>Payment Willingness</strong></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section final">
+      <div class="narrow">
+        <p class="eyebrow fade">Open Question</p>
+        <h2 class="display fade delay-1">Question<br /><span class="muted">not</span><br />Answer</h2>
+        <p class="lede fade delay-2">Is this the first product<br />for Watcher?</p>
+        <div class="find-out fade delay-3">Let's find out.</div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+
+    const fadeObserver = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add("is-visible");
+        }
+      });
+    }, { threshold: 0.18, rootMargin: "0px 0px -8% 0px" });
+
+    document.querySelectorAll(".fade").forEach((element) => fadeObserver.observe(element));
+
+    const activeObserver = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add("is-active");
+        }
+      });
+    }, { threshold: 0.46 });
+
+    document.querySelectorAll(".glass-card, .criteria-card, .unknown").forEach((element) => activeObserver.observe(element));
+
+    const sceneCard = document.querySelector("[data-scene-card]");
+    const scenes = Array.from(document.querySelectorAll(".scene"));
+    let sceneIndex = 0;
+
+    setInterval(() => {
+      const rect = sceneCard.getBoundingClientRect();
+      const visible = rect.top < window.innerHeight && rect.bottom > 0;
+      if (!visible) return;
+      scenes[sceneIndex].classList.remove("is-active");
+      sceneIndex = (sceneIndex + 1) % scenes.length;
+      scenes[sceneIndex].classList.add("is-active");
+    }, 1900);
+
+    const parallaxSections = Array.from(document.querySelectorAll("[data-parallax]"));
+    const stack = document.querySelector("[data-stack]");
+
+    const updateScrollEffects = () => {
+      parallaxSections.forEach((section) => {
+        const rect = section.getBoundingClientRect();
+        const progress = clamp((window.innerHeight - rect.top) / (window.innerHeight + rect.height), 0, 1);
+        section.style.setProperty("--scroll", progress.toFixed(4));
+      });
+
+      if (stack) {
+        const rect = stack.getBoundingClientRect();
+        const progress = clamp((window.innerHeight - rect.top) / (window.innerHeight + rect.height), 0, 1);
+        stack.querySelectorAll(".scenario").forEach((item, index) => {
+          item.style.setProperty("--stack", (progress * index).toFixed(3));
+        });
+      }
+    };
+
+    updateScrollEffects();
+    window.addEventListener("scroll", updateScrollEffects, { passive: true });
+    window.addEventListener("resize", updateScrollEffects);
+  </script>
+</body>
+</html>

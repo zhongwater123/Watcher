@@ -97,6 +97,7 @@ internal fun VideoAnalysisWorkbenchPage(
     pageOffset: Float
 ) {
     val header = workspaceHeaderFor(currentPage)
+    val isPageVisible = kotlin.math.abs(pageOffset) < 0.98f
     val selectedRun = remember(recentRuns, selectedRunId) {
         recentRuns.firstOrNull { it.id == selectedRunId }
     }
@@ -171,7 +172,8 @@ internal fun VideoAnalysisWorkbenchPage(
                 onReconnect = onReconnectStream,
                 onCaptureSnapshot = onCaptureSnapshot,
                 onOpenSettings = onOpenSettings,
-                compact = true
+                compact = true,
+                previewActive = isPageVisible
             )
         }
 

@@ -1,7 +1,11 @@
 package com.example.watcher.data.repository
 
+import android.content.Context
+import com.example.watcher.data.local.ClassroomNoteFollowupDao
 import com.example.watcher.data.local.MonitorEventDao
+import com.example.watcher.data.local.MonitorEventRunSummary
 import com.example.watcher.data.local.MonitorMediaDao
+import com.example.watcher.data.local.MonitorMediaRunSummary
 import com.example.watcher.data.local.MonitorRunDao
 import com.example.watcher.data.local.MonitorTaskDao
 import com.example.watcher.data.local.TimelineEventDao
@@ -10,6 +14,7 @@ import com.example.watcher.data.local.VideoProcessRunDao
 import com.example.watcher.data.local.VideoProcessTaskDao
 import com.example.watcher.data.local.VideoRemoteFileBindingDao
 import com.example.watcher.data.local.VideoSegmentRunDao
+import com.example.watcher.data.local.VideoSegmentRunSummary
 import com.example.watcher.data.local.VideoSpeechTranscriptDao
 import com.example.watcher.data.model.CheckResult
 import com.example.watcher.data.model.HistoryRecordDetail
@@ -32,12 +37,17 @@ import com.example.watcher.data.model.VideoProcessRun
 import com.example.watcher.data.model.VideoRemoteFileBindingEntity
 import com.example.watcher.data.model.VideoSegmentRun
 import com.example.watcher.data.model.VideoSpeechTranscriptEntity
+import com.example.watcher.data.model.historyMonitorRunStatusLabel
 import com.example.watcher.data.model.historyTypeLabel
+import com.example.watcher.data.model.historyVideoRunStatusLabel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import java.io.File
 
+const val HISTORY_DETAIL_PREVIEW_LIMIT = 50
+
 class HistoryRepository(
+    private val appContext: Context,
     private val monitorRunDao: MonitorRunDao,
     private val monitorEventDao: MonitorEventDao,
     private val monitorMediaDao: MonitorMediaDao,
@@ -48,21 +58,22 @@ class HistoryRepository(
     private val videoAudioAssetDao: VideoAudioAssetDao,
     private val videoRemoteFileBindingDao: VideoRemoteFileBindingDao,
     private val videoSpeechTranscriptDao: VideoSpeechTranscriptDao,
+    private val classroomNoteFollowupDao: ClassroomNoteFollowupDao,
     private val timelineEventDao: TimelineEventDao
 ) {
     fun observeHistoryRecords(): Flow<List<HistoryRecordItem>> {
         return combine(
             videoRunDao.observeAllRuns(),
-            videoSegmentRunDao.observeAllSegmentsWithFiles(),
+            videoSegmentRunDao.observeRunFileSummaries(),
             monitorRunDao.observeAllRuns(),
-            monitorEventDao.observeAllEvents(),
-            monitorMediaDao.observeAllMedia()
-        ) { videoRuns, videoSegments, monitorRuns, monitorEvents, monitorMedia ->
-            val segmentsByRun = videoSegments.groupBy(VideoSegmentRun::runId)
-            val eventsByRun = monitorEvents.groupBy(MonitorEventEntity::runId)
-            val mediaByRun = monitorMedia.groupBy(MonitorMediaEntity::runId)
+            monitorEventDao.observeRunSummaries(),
+            monitorMediaDao.observeRunSummaries()
+        ) { videoRuns, videoSegmentSummaries, monitorRuns, monitorEventSummaries, monitorMediaSummaries ->
+            val segmentsByRun = videoSegmentSummaries.associateBy(VideoSegmentRunSummary::runId)
+            val eventsByRun = monitorEventSummaries.associateBy(MonitorEventRunSummary::runId)
+            val mediaByRun = monitorMediaSummaries.associateBy(MonitorMediaRunSummary::runId)
             val videoItems = videoRuns.map { run ->
-                val segments = segmentsByRun[run.id].orEmpty().sortedBy(VideoSegmentRun::segmentIndex)
+                val segmentSummary = segmentsByRun[run.id]
                 val mergedVideoCount = listOf(run.fullMediaPath, run.mergedVideoPath)
                     .count { !it.isNullOrBlank() }
                 HistoryRecordItem(
@@ -71,22 +82,22 @@ class HistoryRepository(
                     summary = run.finalSummary.ifBlank {
                         run.errorMessage ?: run.finalConclusion.ifBlank { "暂无分析摘要" }
                     },
-                    statusLabel = com.example.watcher.data.model.videoRunStatusLabel(run.status),
+                    statusLabel = historyVideoRunStatusLabel(run),
                     updatedAt = run.updatedAt,
                     startedAt = run.recordingStartedAt ?: run.createdAt,
                     typeLabel = historyTypeLabel(HistoryRecordType.VideoAnalysis),
-                    hasMedia = mergedVideoCount > 0 || segments.isNotEmpty(),
-                    mediaCount = mergedVideoCount + segments.count { !it.localFilePath.isNullOrBlank() },
+                    hasMedia = mergedVideoCount > 0 || (segmentSummary?.segmentFileCount ?: 0) > 0,
+                    mediaCount = mergedVideoCount + (segmentSummary?.segmentFileCount ?: 0),
                     previewPath = run.fullMediaPath
                         ?: run.mergedVideoPath
-                        ?: segments.firstNotNullOfOrNull { it.localFilePath }
+                        ?: segmentSummary?.previewPath
                 )
             }
             val monitorItems = monitorRuns.map { run ->
-                val events = eventsByRun[run.id].orEmpty()
-                val media = mediaByRun[run.id].orEmpty()
-                val eventFrames = events.count { !it.frameImagePath.isNullOrBlank() }
-                val assetCount = media.size +
+                val eventSummary = eventsByRun[run.id]
+                val mediaSummary = mediaByRun[run.id]
+                val eventFrames = eventSummary?.frameCount ?: 0
+                val assetCount = (mediaSummary?.mediaCount ?: 0) +
                     if (run.baselineImagePath != null) 1 else 0 +
                     if (run.sessionVideoPath != null) 1 else 0 +
                     eventFrames
@@ -94,7 +105,7 @@ class HistoryRepository(
                     selection = HistoryRecordSelection(HistoryRecordType.LiveMonitor, run.id),
                     title = run.taskTitle.ifBlank { "实时监控任务" },
                     summary = run.lastSummary.ifBlank { run.lastReason.ifBlank { "暂无监控摘要" } },
-                    statusLabel = com.example.watcher.data.model.monitorRunStatusLabel(run.status),
+                    statusLabel = historyMonitorRunStatusLabel(run),
                     updatedAt = run.updatedAt,
                     startedAt = run.startedAt,
                     typeLabel = historyTypeLabel(HistoryRecordType.LiveMonitor),
@@ -102,8 +113,8 @@ class HistoryRepository(
                     mediaCount = assetCount,
                     previewPath = run.sessionVideoPath
                         ?: run.baselineImagePath
-                        ?: events.firstNotNullOfOrNull { it.frameImagePath }
-                        ?: media.firstOrNull()?.localFilePath
+                        ?: eventSummary?.previewFramePath
+                        ?: mediaSummary?.previewPath
                 )
             }
             (videoItems + monitorItems).sortedByDescending(HistoryRecordItem::updatedAt)
@@ -146,10 +157,10 @@ class HistoryRepository(
         return when (selection.type) {
             HistoryRecordType.VideoAnalysis -> {
                 val debugAssets = combine(
-                    videoAudioAssetDao.observeForRun(selection.recordId),
-                    videoRemoteFileBindingDao.observeForRun(selection.recordId),
-                    timelineEventDao.observeEventsForRun(selection.recordId),
-                    videoSpeechTranscriptDao.observeForRun(selection.recordId)
+                    videoAudioAssetDao.observeForRunLimited(selection.recordId, HISTORY_DETAIL_PREVIEW_LIMIT),
+                    videoRemoteFileBindingDao.observeForRunLimited(selection.recordId, HISTORY_DETAIL_PREVIEW_LIMIT),
+                    timelineEventDao.observeEventsForRunLimited(selection.recordId, HISTORY_DETAIL_PREVIEW_LIMIT),
+                    videoSpeechTranscriptDao.observeRecentForRun(selection.recordId, HISTORY_DETAIL_PREVIEW_LIMIT)
                 ) { audioAssets, remoteFileBindings, events, speechTranscripts ->
                     VideoHistoryDebugAssets(
                         audioAssets = audioAssets,
@@ -158,11 +169,26 @@ class HistoryRepository(
                         speechTranscripts = speechTranscripts
                     )
                 }
+                val debugCounts = combine(
+                    videoAudioAssetDao.observeCountForRun(selection.recordId),
+                    videoRemoteFileBindingDao.observeCountForRun(selection.recordId),
+                    timelineEventDao.observeEventCountForRun(selection.recordId),
+                    videoSpeechTranscriptDao.observeCountForRun(selection.recordId)
+                ) { audioAssetCount, remoteFileBindingCount, eventCount, speechTranscriptCount ->
+                    VideoHistoryDebugCounts(
+                        audioAssetCount = audioAssetCount,
+                        remoteFileBindingCount = remoteFileBindingCount,
+                        eventCount = eventCount,
+                        speechTranscriptCount = speechTranscriptCount
+                    )
+                }
                 combine(
                     videoRunDao.observeRunById(selection.recordId),
-                    videoSegmentRunDao.observeSegmentsForRun(selection.recordId),
-                    debugAssets
-                ) { run, segments, assets ->
+                    videoSegmentRunDao.observeSegmentsForRunLimited(selection.recordId, HISTORY_DETAIL_PREVIEW_LIMIT),
+                    videoSegmentRunDao.observeSegmentCountForRun(selection.recordId),
+                    debugAssets,
+                    debugCounts
+                ) { run, segments, segmentCount, assets, counts ->
                     run?.let {
                         VideoHistoryDetail(
                             run = it,
@@ -171,27 +197,135 @@ class HistoryRepository(
                             audioAssets = assets.audioAssets,
                             remoteFileBindings = assets.remoteFileBindings,
                             events = assets.events,
-                            speechTranscripts = assets.speechTranscripts
+                            speechTranscripts = assets.speechTranscripts,
+                            totalSegmentCount = segmentCount,
+                            totalAudioAssetCount = counts.audioAssetCount,
+                            totalRemoteFileBindingCount = counts.remoteFileBindingCount,
+                            totalEventCount = counts.eventCount,
+                            totalSpeechTranscriptCount = counts.speechTranscriptCount
                         )
                     }
                 }
             }
 
-            HistoryRecordType.LiveMonitor -> combine(
-                monitorRunDao.observeRunById(selection.recordId),
-                monitorEventDao.observeEventsForRun(selection.recordId),
-                monitorMediaDao.observeMediaForRun(selection.recordId)
-            ) { run, events, media ->
-                run?.let {
-                    com.example.watcher.data.model.MonitorHistoryDetail(
-                        run = it,
-                        task = it.taskId?.let { taskId -> monitorTaskDao.getTaskById(taskId) },
+            HistoryRecordType.LiveMonitor -> {
+                val previewAssets = combine(
+                    monitorEventDao.observeRecentEventsForRun(selection.recordId, HISTORY_DETAIL_PREVIEW_LIMIT),
+                    monitorMediaDao.observeRecentMediaForRun(selection.recordId, HISTORY_DETAIL_PREVIEW_LIMIT),
+                    monitorEventDao.observeEventCountForRun(selection.recordId),
+                    monitorMediaDao.observeMediaCountForRun(selection.recordId)
+                ) { events, media, eventCount, mediaCount ->
+                    MonitorHistoryPreviewAssets(
                         events = events,
-                        media = media
+                        media = media,
+                        eventCount = eventCount,
+                        mediaCount = mediaCount
                     )
+                }
+                combine(
+                    monitorRunDao.observeRunById(selection.recordId),
+                    previewAssets
+                ) { run, assets ->
+                    run?.let {
+                        com.example.watcher.data.model.MonitorHistoryDetail(
+                            run = it,
+                            task = it.taskId?.let { taskId -> monitorTaskDao.getTaskById(taskId) },
+                            events = assets.events,
+                            media = assets.media,
+                            totalEventCount = assets.eventCount,
+                            totalMediaCount = assets.mediaCount
+                        )
+                    }
                 }
             }
         }
+    }
+
+    fun observeFullVideoHistoryDetail(runId: Long): Flow<VideoHistoryDetail?> {
+        val fullAssets = combine(
+            videoAudioAssetDao.observeForRun(runId),
+            videoRemoteFileBindingDao.observeForRun(runId),
+            timelineEventDao.observeEventsForRun(runId),
+            videoSpeechTranscriptDao.observeForRun(runId)
+        ) { audioAssets, remoteFileBindings, events, speechTranscripts ->
+            VideoHistoryDebugAssets(
+                audioAssets = audioAssets,
+                remoteFileBindings = remoteFileBindings,
+                events = events,
+                speechTranscripts = speechTranscripts
+            )
+        }
+        return combine(
+            videoRunDao.observeRunById(runId),
+            videoSegmentRunDao.observeSegmentsForRun(runId),
+            fullAssets
+        ) { run, segments, assets ->
+            run?.let {
+                buildVideoHistoryDetail(
+                    run = it,
+                    segments = segments,
+                    audioAssets = assets.audioAssets,
+                    remoteFileBindings = assets.remoteFileBindings,
+                    events = assets.events,
+                    speechTranscripts = assets.speechTranscripts
+                )
+            }
+        }
+    }
+
+    suspend fun getFullHistoryDetail(selection: HistoryRecordSelection): HistoryRecordDetail? {
+        return when (selection.type) {
+            HistoryRecordType.VideoAnalysis -> getFullVideoHistoryDetail(selection.recordId)
+            HistoryRecordType.LiveMonitor -> {
+                val run = monitorRunDao.getRunById(selection.recordId) ?: return null
+                val events = monitorEventDao.getEventsForRun(selection.recordId)
+                val media = monitorMediaDao.getMediaForRun(selection.recordId)
+                com.example.watcher.data.model.MonitorHistoryDetail(
+                    run = run,
+                    task = run.taskId?.let { taskId -> monitorTaskDao.getTaskById(taskId) },
+                    events = events,
+                    media = media,
+                    totalEventCount = events.size,
+                    totalMediaCount = media.size
+                )
+            }
+        }
+    }
+
+    suspend fun getFullVideoHistoryDetail(runId: Long): VideoHistoryDetail? {
+        val run = videoRunDao.getRunById(runId) ?: return null
+        return buildVideoHistoryDetail(
+            run = run,
+            segments = videoSegmentRunDao.getSegmentsForRun(runId),
+            audioAssets = videoAudioAssetDao.getForRun(runId),
+            remoteFileBindings = videoRemoteFileBindingDao.getForRun(runId),
+            events = timelineEventDao.getEventsForRun(runId),
+            speechTranscripts = videoSpeechTranscriptDao.getForRun(runId)
+        )
+    }
+
+    private suspend fun buildVideoHistoryDetail(
+        run: VideoProcessRun,
+        segments: List<VideoSegmentRun>,
+        audioAssets: List<VideoAudioAssetEntity>,
+        remoteFileBindings: List<VideoRemoteFileBindingEntity>,
+        events: List<TimelineEventEntity>,
+        speechTranscripts: List<VideoSpeechTranscriptEntity>
+    ): VideoHistoryDetail {
+        return VideoHistoryDetail(
+            run = run,
+            task = videoProcessTaskDao.getTaskById(run.taskId),
+            segments = segments,
+            audioAssets = audioAssets,
+            remoteFileBindings = remoteFileBindings,
+            events = events,
+            speechTranscripts = speechTranscripts,
+            totalSegmentCount = segments.size,
+            totalAudioAssetCount = audioAssets.size,
+            totalRemoteFileBindingCount = remoteFileBindings.size,
+            totalEventCount = events.size,
+            totalSpeechTranscriptCount = speechTranscripts.size
+        )
     }
 
     suspend fun startMonitorRun(task: IntentResult): Long {
@@ -289,39 +423,60 @@ class HistoryRepository(
     suspend fun deleteHistoryRecord(selection: HistoryRecordSelection) {
         when (selection.type) {
             HistoryRecordType.VideoAnalysis -> {
-                videoRunDao.getRunById(selection.recordId)?.let { run ->
-                    run.fullMediaPath?.let(::deleteFileIfExists)
-                    run.mergedVideoPath?.let(::deleteFileIfExists)
+                val run = videoRunDao.getRunById(selection.recordId)
+                if (run != null) {
+                    val manifest = RunLocalResourceCollector.collectVideoRunResources(
+                        videoRunsDir = File(appContext.filesDir, "video_runs"),
+                        run = run,
+                        segments = videoSegmentRunDao.getSegmentsForRun(selection.recordId),
+                        audioAssets = videoAudioAssetDao.getForRun(selection.recordId),
+                        remoteFileBindings = videoRemoteFileBindingDao.getForRun(selection.recordId)
+                    )
+                    deleteLocalResourceManifest(manifest)
                 }
-                videoSegmentRunDao.getSegmentsForRun(selection.recordId)
-                    .mapNotNull(VideoSegmentRun::localFilePath)
-                    .forEach(::deleteFileIfExists)
+                classroomNoteFollowupDao.deleteByRunId(selection.recordId)
                 videoRunDao.deleteById(selection.recordId)
             }
 
             HistoryRecordType.LiveMonitor -> {
-                monitorEventDao.getEventsForRun(selection.recordId)
-                    .mapNotNull(MonitorEventEntity::frameImagePath)
-                    .forEach(::deleteFileIfExists)
-                monitorMediaDao.getMediaForRun(selection.recordId)
-                    .map(MonitorMediaEntity::localFilePath)
-                    .forEach(::deleteFileIfExists)
-                monitorRunDao.getRunById(selection.recordId)?.let { run ->
-                    run.baselineImagePath?.let(::deleteFileIfExists)
-                    run.sessionVideoPath?.let(::deleteFileIfExists)
+                val run = monitorRunDao.getRunById(selection.recordId)
+                if (run != null) {
+                    val manifest = RunLocalResourceCollector.collectMonitorRunResources(
+                        run = run,
+                        events = monitorEventDao.getEventsForRun(selection.recordId),
+                        media = monitorMediaDao.getMediaForRun(selection.recordId)
+                    )
+                    deleteLocalResourceManifest(manifest)
                 }
                 monitorRunDao.deleteById(selection.recordId)
             }
         }
     }
 
-    private fun deleteFileIfExists(path: String) {
-        runCatching {
-            val file = File(path)
-            if (file.exists()) {
-                file.delete()
+    private fun deleteLocalResourceManifest(manifest: RunLocalResourceManifest) {
+        val safeManifest = manifest.managedBy(localResourceRoots())
+        safeManifest.files.forEach { file ->
+            runCatching {
+                if (file.exists() && file.isFile) {
+                    file.delete()
+                }
             }
         }
+        safeManifest.directories.forEach { directory ->
+            runCatching {
+                if (directory.exists() && directory.isDirectory) {
+                    directory.deleteRecursively()
+                }
+            }
+        }
+        ClassroomRealtimeDiagnostics.ast("run_resource_cleanup run=${manifest.runId}")
+    }
+
+    private fun localResourceRoots(): List<File> = buildList {
+        add(appContext.filesDir)
+        add(appContext.cacheDir)
+        appContext.externalCacheDir?.let(::add)
+        appContext.getExternalFilesDirs(null).filterNotNull().forEach(::add)
     }
 
     private fun fileSize(path: String): Long {
@@ -335,4 +490,18 @@ private data class VideoHistoryDebugAssets(
     val remoteFileBindings: List<VideoRemoteFileBindingEntity>,
     val events: List<TimelineEventEntity>,
     val speechTranscripts: List<VideoSpeechTranscriptEntity>
+)
+
+private data class VideoHistoryDebugCounts(
+    val audioAssetCount: Int,
+    val remoteFileBindingCount: Int,
+    val eventCount: Int,
+    val speechTranscriptCount: Int
+)
+
+private data class MonitorHistoryPreviewAssets(
+    val events: List<MonitorEventEntity>,
+    val media: List<MonitorMediaEntity>,
+    val eventCount: Int,
+    val mediaCount: Int
 )

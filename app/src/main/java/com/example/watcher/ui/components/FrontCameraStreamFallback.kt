@@ -22,6 +22,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -34,6 +35,25 @@ internal const val FRONT_CAMERA_SOURCE_LABEL = "手机前置摄像头（降级�
 internal const val BACK_CAMERA_SOURCE_LABEL = "手机后置摄像头（降级）"
 
 enum class CameraFallbackLens { Front, Back }
+
+internal object CameraFallbackPreference {
+    @Volatile
+    var selectedLens: CameraFallbackLens = CameraFallbackLens.Front
+        private set
+
+    @Volatile
+    var preferFallbackFirst: Boolean = false
+        private set
+
+    fun recordSelectedLens(lens: CameraFallbackLens) {
+        selectedLens = lens
+        preferFallbackFirst = true
+    }
+
+    fun markRemoteConnected() {
+        preferFallbackFirst = false
+    }
+}
 
 internal fun cameraSourceLabel(lens: CameraFallbackLens): String = when (lens) {
     CameraFallbackLens.Front -> FRONT_CAMERA_SOURCE_LABEL
@@ -56,6 +76,7 @@ internal fun rememberCameraFallbackState(
     active: Boolean,
     lens: CameraFallbackLens = CameraFallbackLens.Front,
     reconnectToken: Int,
+    frameTransform: (Bitmap) -> Bitmap = { it },
     onFrameUpdate: (Bitmap?) -> Unit = {}
 ): CameraFallbackState {
     val context = LocalContext.current
@@ -69,6 +90,7 @@ internal fun rememberCameraFallbackState(
     var connectionStatus by remember { mutableStateOf<ConnectionStatus>(ConnectionStatus.Disconnected) }
     var fps by remember { mutableIntStateOf(0) }
     var permissionDenied by remember { mutableStateOf(false) }
+    val latestFrameTransform by rememberUpdatedState(frameTransform)
     var hasPermission by remember(context) {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
@@ -141,7 +163,7 @@ internal fun rememberCameraFallbackState(
                         executor = cameraExecutor,
                         targetRotation = targetRotation
                     ) { image ->
-                        val frame = image.toBitmap()
+                        val frame = latestFrameTransform(image.toBitmap())
                         image.close()
 
                         mainExecutor.execute {
